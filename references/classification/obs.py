@@ -80,20 +80,20 @@ class Scope(object):
         self.module.register_buffer("weight_mask",
                                     torch.ones_like(self.module.weight))
         self.module.weight.register_hook(
-            lambda grad: grad * getattr(self.module, "weight_mask"))
+            lambda g: g * self.module.weight_mask)
         if self.has_bias:
             self.module.register_buffer("bias_mask",
                                         torch.ones_like(self.module.bias))
             self.module.bias.register_hook(
-                lambda grad: grad * getattr(self.module, "bias_mask"))
+                lambda g: g * self.module.bias_mask)
 
     @property
     def weight_mask(self):
-        return getattr(self.module, "weight_mask")
+        return self.module.weight_mask
 
     @property
     def bias_mask(self):
-        return getattr(self.module, "bias_mask")
+        return self.module.bias_mask
 
     @property
     def mask(self):
@@ -101,6 +101,12 @@ class Scope(object):
             return to_vector([self.weight_mask, self.bias_mask])
         else:
             return to_vector([self.weight_mask])
+
+    @mask.setter
+    def mask(self, mask):
+        self.module.weight_mask = mask[:self.n_weight]
+        if self.has_bias:
+            self.module.bias_mask = mask[self.n_weight:]
 
     @property
     def grad(self):
@@ -113,32 +119,28 @@ class Scope(object):
         scores = self.parameters.pow(2) / diag_fisher_inv
         return scores.masked_fill(self.mask == 0.0, float("inf"))
 
-    def prune(self, i, d=None, check=False):
-        assert i not in self.pruned
-        assert i < self.n
-        assert self.mask[i] == 1.0
-        self.pruned.add(i)
+    def prune(self, indices, check=False):
+        if check:
+            assert torch.all(indices < self.n)
+            assert torch.all(self.mask[indices] == 1.0)
+            assert len(self.pruned & set(indices.tolist())) == 0
+            self.pruned |= set(indices.tolist())
 
         with torch.no_grad():
-            if d is not None:
-                self.parameters_iadd(d)
-            if i < self.n_weight:
-                self.weight.view(-1)[i] = 0.0
-                self.weight_mask.view(-1)[i] = 0.0
-            else:
-                self.bias.view(-1)[i - self.n_weight] = 0.0
-                self.bias_mask.view(-1)[i - self.n_weight] = 0.0
-        self.n_zero += 1
+            p = self.parameters
+            p[indices] = 0.0
+            self.parameters = p
+            mask = self.mask
+            mask[indices] = 0.0
+            self.mask = mask
+        self.n_zero += indices.shape[0]
 
         if check:
-            assert self.parameters[i] == 0.0
-            assert self.mask[i] == 0.0
-            self.check()
-
-    def check(self):
-        masked = self.parameters.masked_select(self.mask < 1)
-        zeros = torch.zeros(self.n_zero).to(masked.device)
-        torch.testing.assert_close(masked, zeros)
+            assert torch.all(self.parameters[indices] == 0.0)
+            assert torch.all(self.mask[indices] == 0.0)
+            masked = self.parameters.masked_select(self.mask < 1)
+            zeros = torch.zeros(self.n_zero).to(masked.device)
+            torch.testing.assert_close(masked, zeros)
 
     @property
     def sparsity(self):
@@ -153,7 +155,7 @@ class Scope(object):
 
 
 class OptimalBrainSurgeon(object):
-    def __init__(self, model, scopes, fisher_type, world_size=0, check=False):
+    def __init__(self, model, scopes, fisher_type, world_size=0):
         self.model = model
         self.scopes = scopes
         offset = 0
@@ -167,10 +169,8 @@ class OptimalBrainSurgeon(object):
         self.fisher_type = fisher_type
         self.ifisher = None
         self.ifisher_diag = None
-        self.pruned = set()
-        self._device = next(self.model.parameters()).device
+        self.device = next(self.model.parameters()).device
         self.world_size = world_size
-        self._check = check
 
     def _get_scope_by_indice(self, i):
         for s in self.scopes:
@@ -214,8 +214,8 @@ class OptimalBrainSurgeon(object):
             if n_samples != -1 and len(inputs) > n_samples:
                 inputs = inputs[:n_samples]
                 targets = targets[:n_samples]
-            inputs = inputs.to(self._device)
-            targets = targets.to(self._device)
+            inputs = inputs.to(self.device)
+            targets = targets.to(self.device)
             yield inputs, targets
             if n_samples != -1:
                 n_samples -= len(inputs)
@@ -233,25 +233,8 @@ class OptimalBrainSurgeon(object):
                                      accumulate=True if i > 0 else False,
                                      data_average=False,
                                      scale=1 / n_samples)
-
-    def _prune_one(self, i):
-        assert i not in self.pruned
-        self.pruned.add(i)
-
-        scope = self._get_scope_by_indice(i)
-        d = self._pruning_direction(i)
-        if d is None:
-            scope.prune(i - scope.l, check=self._check, log=False)
-        elif len(d) == scope.n:
-            scope.prune(i - scope.l, d, check=self._check, log=False)
-        elif len(d) == self.n:
-            self.parameters_iadd(d)
-            scope.prune(i - scope.l, check=self._check, log=False)
-        else:
-            assert False
-
-        self.n_zero += 1
-        self.check()
+            print("+", end="")
+        print("")
 
     def prune(self,
               loader,
@@ -259,7 +242,8 @@ class OptimalBrainSurgeon(object):
               damping=1e-3,
               n_recompute=1,
               n_recompute_samples=4096,
-              cb=lambda : None):
+              cb=lambda : None,
+              check=False):
         init_n_zero = self.n_zero
         target_n_zero = int(self.n * sparsity)
 
@@ -271,23 +255,30 @@ class OptimalBrainSurgeon(object):
                 init_n_zero, target_n_zero, i, n_recompute)
 
         for i in range(1, n_recompute + 1):
-            # We are accumulating fisher across recompute iteration
-            # Should we clear fisher at beginning of the iteration?
             self._calc_fisher(loader, n_recompute_samples, damping)
             with torch.no_grad():
                 n_pruned = int(schedule(i)) - self.n_zero
                 scores = self._get_scores()
                 _, indices = torch.sort(scores)
                 indices = indices[:n_pruned]
-                for j in indices:
-                    self._prune_one(j.item())
-                    cb()
-
-    def check(self):
-        if self._check:
-            mask = torch.ones(self.n)
-            mask[list(self.pruned)] = 0.0
-            torch.testing.assert_close(mask.to(self.mask.device), self.mask)
+                for s in self.scopes:
+                    j = torch.where(indices < s.r, indices, 0)
+                    j = torch.where(s.l <= indices, j , 0)
+                    j = indices[j.nonzero()].view(-1)
+                    stride = 10*1024*1024*1024//s.n_weight//4
+                    d = torch.zeros(self.n if self.fisher_shape == SHAPE_FULL else s.n).to(self.device)
+                    for k in range(0, j.shape[0], stride):
+                        d += self._pruning_direction(s, j[k:k+stride])
+                    if self.fisher_shape == SHAPE_FULL:
+                        self.parameters_iadd(d)
+                    else:
+                        s.parameters_iadd(d)
+                    s.prune(j - s.l, check=check)
+                    self.n_zero += j.shape[0]
+                    #print(torch.cuda.memory_allocated())
+                    print(".",end="")
+                print()
+            cb()
 
     @property
     def sparsity(self):
@@ -300,8 +291,8 @@ class OptimalBrainSurgeon(object):
 
 
 class FullOBS(OptimalBrainSurgeon):
-    def __init__(self, model, scopes, fisher_type,world_size, check):
-        super().__init__(model, scopes, fisher_type,world_size, check=check)
+    def __init__(self, model, scopes, fisher_type,world_size):
+        super().__init__(model, scopes, fisher_type,world_size)
         self.fisher_shape = SHAPE_FULL
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
@@ -314,22 +305,23 @@ class FullOBS(OptimalBrainSurgeon):
             fisher.data /= self.world_size
         fisher.update_inv(damping)
         self.ifisher = fisher.inv
-        self.ifisher_diag = torch.diagonal(self.ifisher)
+        self.ifisher_diag = fisher.inv.diag()
 
     def _get_scores(self):
         scores = self.parameters.pow(2) / self.ifisher_diag
         scores = scores.masked_fill(self.mask == 0.0, float("inf"))
         return scores
 
-    def _pruning_direction(self, i):
-        s = self._get_scope_by_indice(i)
-        pi = s.parameters[i - s.l]
-        return -pi * self.ifisher[:, i] / self.ifisher_diag[i] * self.mask
+    def _pruning_direction(self, s, i):
+        pi = s.parameters[i-s.l]
+        d = (-pi / self.ifisher_diag[i] * self.ifisher[:, i]).sum(1) * self.mask
+        d[i] = -pi
+        return d
 
 
 class LayerOBS(OptimalBrainSurgeon):
-    def __init__(self, model, scopes, fisher_type,world_size, check):
-        super().__init__(model, scopes, fisher_type,world_size, check=check)
+    def __init__(self, model, scopes, fisher_type,world_size):
+        super().__init__(model, scopes, fisher_type,world_size)
         self.fisher_shape = SHAPE_LAYER_WISE
         self.normalize = False
 
@@ -341,7 +333,7 @@ class LayerOBS(OptimalBrainSurgeon):
             fisher.data *= mask.reshape([1, -1]) * mask.reshape([-1, 1])
             fisher.update_inv(damping)
             s.ifisher = fisher.inv
-            s.ifisher_diag = torch.diagonal(s.ifisher)
+            s.ifisher_diag = fisher.inv.diag()
 
     def _get_scores(self):
         flatten_scores = []
@@ -354,15 +346,17 @@ class LayerOBS(OptimalBrainSurgeon):
             flatten_scores.append(scores)
         return to_vector(flatten_scores)
 
-    def _pruning_direction(self, i):
-        s = self._get_scope_by_indice(i)
-        pi = s.parameters[i - s.l]
-        return -pi * s.ifisher[:, i - s.l] / s.ifisher_diag[i - s.l] * s.mask
+    def _pruning_direction(self, s, i):
+        j = i - s.l
+        pj = s.parameters[j]
+        d = (-pj / s.ifisher_diag[j] * s.ifisher[:, j]).sum(1) * s.mask
+        d[j] = -pj
+        return d
 
 
 class KronOBS(LayerOBS):
-    def __init__(self, model, scopes, fisher_type,world_size, check):
-        super().__init__(model, scopes, fisher_type,world_size, check=check)
+    def __init__(self, model, scopes, fisher_type,world_size):
+        super().__init__(model, scopes, fisher_type,world_size)
         self.fisher_shape = SHAPE_KRON
         self.normalize = False
         self.fast_inv = False
@@ -373,22 +367,38 @@ class KronOBS(LayerOBS):
             fisher = getattr(s.module, self.fisher_type).kron
             if self.fast_inv:
                 # This method is wrong
+                # kron(inverse(A), inverse(B))*mask
                 fisher.update_inv(damping)
-                fisher.inv = torch.kron(fisher.A_inv, fisher.B_inv)
-                mask = s.mask
-                fisher.inv *= mask.reshape([1, -1]) * mask.reshape([-1, 1])
+                s.ifisher_diag = torch.kron(fisher.A_inv.diag(), fisher.B_inv.diag())*s.mask
             else:
+                # (kron(A,B)*mask).inverse()
                 f = torch.kron(fisher.A, fisher.B)
                 mask = s.mask
-                f *= mask.reshape([1, -1]) * mask.reshape([-1, 1])
-                fisher.inv = cholesky_inv(add_value_to_diagonal(f, damping))
-            s.ifisher = fisher.inv
-            s.ifisher_diag = torch.diagonal(s.ifisher)
+                f.mul_(mask.reshape([1, -1])).mul_(mask.reshape([-1, 1]))
+                f.as_strided([f.shape[0]], [f.shape[0] + 1]).add_(damping)
+                f = torch.linalg.cholesky(f)
+                f = torch.cholesky_inverse(f)
+                s.ifisher = f
+                s.ifisher_diag = f.diag()
+
+    def _pruning_direction(self, s, i):
+        j = i - s.l
+        pj = s.parameters[j]
+        if self.fast_inv:
+            fisher = getattr(s.module, self.fisher_type).kron
+            a = fisher.A_inv[:, j // fisher.B.shape[1]]
+            b = fisher.B_inv[:, j % fisher.B.shape[1]]
+            vec = torch.einsum("aj,bj->jab", a, b).view(j.shape[0],-1).transpose(0,1)
+        else:
+            vec =  s.ifisher[:, j]
+        d = vec.mul_(-pj / s.ifisher_diag[j]).sum(1) * s.mask
+        d[j] = -pj
+        return d
 
 
 class NoneOBS(OptimalBrainSurgeon):
-    def __init__(self, model, scopes, fisher_type,world_size, check):
-        super().__init__(model, scopes, fisher_type,world_size, check=check)
+    def __init__(self, model, scopes, fisher_type,world_size):
+        super().__init__(model, scopes, fisher_type,world_size)
         self.fisher_shape = "none"
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
@@ -398,14 +408,14 @@ class NoneOBS(OptimalBrainSurgeon):
         return torch.abs(self.parameters).masked_fill(self.mask == 0.0,
                                                       float("inf"))
 
-    def _pruning_direction(self, i):
+    def _pruning_direction(self,s, i):
         return None
 
 
 class FullWoodOBS(FullOBS):
-    def __init__(self, model, scopes, fisher_type,world_size, check):
+    def __init__(self, model, scopes, fisher_type, world_size):
         assert fisher_type == FISHER_EMP
-        super().__init__(model, scopes, FISHER_EMP,world_size, check=check)
+        super().__init__(model, scopes, FISHER_EMP,world_size)
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
         N = None
@@ -424,4 +434,4 @@ class FullWoodOBS(FullOBS):
                 fisher_inv -= torch.outer(fg, fg) / (N + g.T @ fg)
 
         self.ifisher = fisher_inv
-        self.ifisher_diag = torch.diagonal(self.ifisher)
+        self.ifisher_diag = fisher_inv.diag()

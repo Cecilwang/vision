@@ -21,6 +21,7 @@ def parse_args():
 
     parser = argparse.ArgumentParser(description="Pruning")
 
+    parser.add_argument("--dataset", default="imagenet", type=str, help="dataset name")
     parser.add_argument("--data-path", default="/datasets01/imagenet_full_size/061417/", type=str, help="dataset path")
     parser.add_argument("--model", default="resnet50", type=str, help="model name")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
@@ -154,11 +155,18 @@ def parse_args():
                             "full", "layer_wise", "kron", "unit_wise",
                             "full_wood", "none"
                         ])
-    parser.add_argument("--layer_normalize", type=bool, default=False)
-    parser.add_argument("--kfac_fast_inv", type=bool, default=False)
+    parser.add_argument(
+        "--layer_normalize",
+        dest="layer_normalize",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--kfac_fast_inv",
+        dest="kfac_fast_inv",
+        action="store_true",
+    )
 
     parser.add_argument("--check", dest="check", action="store_true")
-    parser.set_defaults(check=False)
 
     parser.add_argument("--sparsity", type=float, default=1.0)
     parser.add_argument("--damping", type=float, default=1e-4)
@@ -181,7 +189,7 @@ def list_model(module, prefix="", condition=lambda _: True):
 
 
 def get_global_prnning_scope(model):
-    modules = list_model(model, condition=lambda x: hasattr(x, "weight"))
+    modules = list_model(model, condition=lambda x: (not isinstance(x, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.LayerNorm))) and hasattr(x, "weight"))
     return [Scope(k, v) for k, v in modules.items()]
 
 
@@ -192,7 +200,7 @@ def create_obs(model, scopes, args):
         SHAPE_KRON: KronOBS,
         "full_wood": FullWoodOBS,
         "none": NoneOBS
-    }[args.fisher_shape](model, scopes, args.fisher_type, args.world_size,args.check)
+    }[args.fisher_shape](model, scopes, args.fisher_type, args.world_size)
     if args.fisher_shape in [SHAPE_KRON, SHAPE_LAYER_WISE]:
         obs.normalize = args.layer_normalize
     if args.fisher_shape == SHAPE_KRON:
@@ -209,13 +217,12 @@ def log(args, *v1,**v2):
         print(*v1,**v2)
 
 def one_shot_pruning(obs, model, data_loader, data_loader_test, criterion, args):
-    def _cb(i):
-        if obs.n_zero % int(obs.n * 0.05) == 0 or obs.n_zero == obs.n:
-            acc = evaluate(model, criterion, data_loader_test, device=args.device, log_suffix="[sparsity={obs.sparsity}]")
-            wlog(acc, 0, obs.n_zero, obs.sparsity, args)
+    def _cb():
+        acc = evaluate(model, criterion, data_loader_test, device=args.device, log_suffix=f"[sparsity={obs.sparsity}]")
+        wlog(acc, 0, obs.n_zero, obs.sparsity, args)
 
     obs.prune(data_loader, args.sparsity, args.damping, args.n_recompute,
-              args.n_recompute_samples, _cb)
+              args.n_recompute_samples, _cb, args.check)
 
 
 def gradual_pruning(obs, model, loaders, opt, criterion, args):
@@ -241,12 +248,17 @@ def gradual_pruning(obs, model, loaders, opt, criterion, args):
         if args.global_rank == 0:
             wlog(acc, e, obs.n_zero, sparsity)
 
+def polynomial_schedule(start, end, i, n):
+    scale = end - start
+    progress = min(float(i) / n, 1.0)
+    remaining_progress = (1.0 - progress)**2
+    return end - scale * remaining_progress
 
 def main():
     args = parse_args()
     if args.resume=="":
         args.pretrained = True
-    args.output_dir = f"{args.output_dir}/{args.data_path.replace('/','-')}/{args.model}/" \
+    args.output_dir = f"{args.output_dir}/{args.dataset}/{args.model}/" \
                f"{args.pruning_strategy}/" \
                f"{args.fisher_type}/{args.fisher_shape}/" \
                f"{args.n_recompute}-{args.n_recompute_samples}"
@@ -327,9 +339,10 @@ def main():
 
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
 
-    acc = evaluate(model, criterion, data_loader_test, device=args.device, log_suffix="Pretrained")
-    wlog(acc, 0, 0, 0.0, args)
+    #acc = evaluate(model, criterion, data_loader_test, device=args.device, log_suffix="Pretrained")
+    #wlog(acc, 0, 0, 0.0, args)
 
+    print("Pruning model")
     scopes = get_global_prnning_scope(model)
     obs = create_obs(model, scopes, args)
 
