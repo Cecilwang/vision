@@ -28,6 +28,16 @@ def parse_args():
     parser.add_argument(
         "-b", "--batch-size", default=128, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
     )
+    parser.add_argument(
+        "--val-batch-size", default=512, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
+    )
+    parser.add_argument(
+        "--fisher-batch-size", default=64, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
+    )
+    parser.add_argument(
+        "--fisher-gb", default=10, type=int
+    )
+
     parser.add_argument("--epochs", default=90, type=int, metavar="N", help="number of total epochs to run")
     parser.add_argument(
         "-j", "--workers", default=4, type=int, metavar="N", help="number of data loading workers (default: 16)"
@@ -216,43 +226,40 @@ def log(args, *v1,**v2):
     if args.rank == 0:
         print(*v1,**v2)
 
-def one_shot_pruning(obs, model, data_loader, data_loader_test, criterion, args):
-    def _cb():
-        acc = evaluate(model, criterion, data_loader_test, device=args.device, log_suffix=f"[sparsity={obs.sparsity}]")
-        wlog(acc, 0, obs.n_zero, obs.sparsity, args)
-
-    obs.prune(data_loader, args.sparsity, args.damping, args.n_recompute,
-              args.n_recompute_samples, _cb, args.check)
-
-
-def gradual_pruning(obs, model, loaders, opt, criterion, args):
-    prev_sparsity = 0.0
-    for e in range(1, args.e + 1):
-        if args.global_rank == 0:
-            logging.info(f"Epoch {e}/{args.e}")
-        sparsity = polynomial_schedule(0, args.sparsity, e, args.n_recompute)
-        if sparsity != prev_sparsity:
-            obs.prune(loaders["train"], sparsity, args.damping, 1,
-                      args.n_recompute_samples, None)
-            prev_sparsity = sparsity
-            acc = test(model, loaders["test"], criterion, args,
-                       f"Pruning sparsity={sparsity:.5}")
-            if args.global_rank == 0:
-                wlog(acc, e, obs.n_zero, sparsity)
-
-        train(model, loaders["train"], opt, criterion, args)
-        obs.parameters = obs.parameters * obs.mask
-
-        acc = test(model, loaders["test"], criterion, args,
-                   f"Finetune sparsity={sparsity:.5}")
-        if args.global_rank == 0:
-            wlog(acc, e, obs.n_zero, sparsity)
-
 def polynomial_schedule(start, end, i, n):
     scale = end - start
     progress = min(float(i) / n, 1.0)
     remaining_progress = (1.0 - progress)**2
     return end - scale * remaining_progress
+
+def one_shot_pruning(obs, model, data_loaders, criterion, args):
+    def _cb():
+        acc = evaluate(model, criterion, data_loaders["test"], device=args.device, log_suffix=f"[sparsity={obs.sparsity}]")
+        wlog(acc, 0, obs.n_zero, obs.sparsity, args)
+
+    obs.prune(data_loaders["fisher"], args.sparsity, args.damping, args.n_recompute,
+              args.n_recompute_samples, args.fisher_gb, _cb, args.check)
+
+
+def gradual_pruning(obs, model, data_loaders, train_sampler,  opt, criterion, args):
+    prev_sparsity = 0.0
+    for e in range(1, args.epochs + 1):
+        log(args, f"Epoch {e}/{args.epochs}")
+        sparsity = polynomial_schedule(0, args.sparsity, e, args.n_recompute)
+        if sparsity != prev_sparsity:
+            obs.prune(data_loaders["fisher"], sparsity, args.damping, 1,
+                    args.n_recompute_samples, args.fisher_gb, check=args.check)
+            prev_sparsity = sparsity
+            acc = evaluate(model, criterion, data_loaders["test"], device=args.device, log_suffix=f"[sparsity={obs.sparsity}]")
+            wlog(acc, e, obs.n_zero, obs.sparsity, args)
+
+        if args.distributed:
+            train_sampler.set_epoch(e)
+        train_one_epoch(model, criterion, opt, data_loaders["train"], args.device, e, args)
+        obs.parameters = obs.parameters * obs.mask
+
+        acc = evaluate(model, criterion, data_loaders["test"], device=args.device, log_suffix=f"[sparsity={obs.sparsity}]")
+        wlog(acc, e, obs.n_zero, obs.sparsity, args)
 
 def main():
     args = parse_args()
@@ -289,7 +296,8 @@ def main():
     if mixup_transforms:
         mixupcutmix = torchvision.transforms.RandomChoice(mixup_transforms)
         collate_fn = lambda batch: mixupcutmix(*default_collate(batch))  # noqa: E731
-    data_loader = torch.utils.data.DataLoader(
+    data_loaders = {}
+    data_loaders["train"] = torch.utils.data.DataLoader(
         dataset,
         batch_size=args.batch_size,
         sampler=train_sampler,
@@ -297,8 +305,15 @@ def main():
         pin_memory=True,
         collate_fn=collate_fn,
     )
-    data_loader_test = torch.utils.data.DataLoader(
-        dataset_test, batch_size=args.batch_size, sampler=test_sampler, num_workers=args.workers, pin_memory=True
+    data_loaders["fisher"] = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=args.fisher_batch_size,
+        sampler=torch.utils.data.RandomSampler(dataset),
+        num_workers=args.workers,
+        pin_memory=True,
+    )
+    data_loaders["test"] = torch.utils.data.DataLoader(
+        dataset_test, batch_size=args.val_batch_size, sampler=test_sampler, num_workers=args.workers, pin_memory=True
     )
 
     print("Creating model")
@@ -316,7 +331,7 @@ def main():
 
     opt_name = args.opt.lower()
     if opt_name.startswith("sgd"):
-        optimizer = torch.optim.SGD(
+        opt = torch.optim.SGD(
             parameters,
             lr=args.lr,
             momentum=args.momentum,
@@ -324,11 +339,11 @@ def main():
             nesterov="nesterov" in opt_name,
         )
     elif opt_name == "rmsprop":
-        optimizer = torch.optim.RMSprop(
+        opt = torch.optim.RMSprop(
             parameters, lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay, eps=0.0316, alpha=0.9
         )
     elif opt_name == "adamw":
-        optimizer = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=args.weight_decay)
+        opt = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=args.weight_decay)
     else:
         raise RuntimeError(f"Invalid optimizer {args.opt}. Only SGD, RMSprop and AdamW are supported.")
 
@@ -339,17 +354,17 @@ def main():
 
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
 
-    #acc = evaluate(model, criterion, data_loader_test, device=args.device, log_suffix="Pretrained")
-    #wlog(acc, 0, 0, 0.0, args)
+    acc = evaluate(model, criterion, data_loaders["test"], device=args.device, log_suffix="Pretrained")
+    wlog(acc, 0, 0, 0.0, args)
 
     print("Pruning model")
     scopes = get_global_prnning_scope(model)
     obs = create_obs(model, scopes, args)
 
     if args.pruning_strategy == "oneshot":
-        one_shot_pruning(obs, model, data_loader, data_loader_test, criterion, args)
-    #else:
-    #    gradual_pruning(obs, model, loaders, opt, criterion, args)
+        one_shot_pruning(obs, model, data_loaders, criterion, args)
+    else:
+        gradual_pruning(obs, model, data_loaders, train_sampler, opt, criterion, args)
 
     log(args, obs)
 

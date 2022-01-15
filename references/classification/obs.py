@@ -104,9 +104,9 @@ class Scope(object):
 
     @mask.setter
     def mask(self, mask):
-        self.module.weight_mask = mask[:self.n_weight]
+        self.module.weight_mask = mask[:self.n_weight].reshape(self.module.weight.shape)
         if self.has_bias:
-            self.module.bias_mask = mask[self.n_weight:]
+            self.module.bias_mask = mask[self.n_weight:].reshape(self.module.bias.shape)
 
     @property
     def grad(self):
@@ -234,7 +234,7 @@ class OptimalBrainSurgeon(object):
                                      data_average=False,
                                      scale=1 / n_samples)
             print("+", end="")
-        print("")
+        print()
 
     def prune(self,
               loader,
@@ -242,8 +242,10 @@ class OptimalBrainSurgeon(object):
               damping=1e-3,
               n_recompute=1,
               n_recompute_samples=4096,
+              fisher_gb =10,
               cb=lambda : None,
               check=False):
+        #print("before pruning", torch.cuda.memory_allocated())
         init_n_zero = self.n_zero
         target_n_zero = int(self.n * sparsity)
 
@@ -265,20 +267,21 @@ class OptimalBrainSurgeon(object):
                     j = torch.where(indices < s.r, indices, 0)
                     j = torch.where(s.l <= indices, j , 0)
                     j = indices[j.nonzero()].view(-1)
-                    stride = 10*1024*1024*1024//s.n_weight//4
-                    d = torch.zeros(self.n if self.fisher_shape == SHAPE_FULL else s.n).to(self.device)
-                    for k in range(0, j.shape[0], stride):
-                        d += self._pruning_direction(s, j[k:k+stride])
-                    if self.fisher_shape == SHAPE_FULL:
-                        self.parameters_iadd(d)
-                    else:
-                        s.parameters_iadd(d)
+                    if self.fisher_shape != "none":
+                        stride = fisher_gb*1024*1024*1024//s.n_weight//4
+                        d = torch.zeros(self.n if self.fisher_shape == SHAPE_FULL else s.n).to(self.device)
+                        for k in range(0, j.shape[0], stride):
+                            d += self._pruning_direction(s, j[k:k+stride])
+                        if self.fisher_shape == SHAPE_FULL:
+                            self.parameters_iadd(d)
+                        else:
+                            s.parameters_iadd(d)
                     s.prune(j - s.l, check=check)
                     self.n_zero += j.shape[0]
-                    #print(torch.cuda.memory_allocated())
                     print(".",end="")
                 print()
             cb()
+        #print("after pruning", torch.cuda.memory_allocated())
 
     @property
     def sparsity(self):
@@ -318,7 +321,6 @@ class FullOBS(OptimalBrainSurgeon):
         d[i] = -pi
         return d
 
-
 class LayerOBS(OptimalBrainSurgeon):
     def __init__(self, model, scopes, fisher_type,world_size):
         super().__init__(model, scopes, fisher_type,world_size)
@@ -352,7 +354,6 @@ class LayerOBS(OptimalBrainSurgeon):
         d = (-pj / s.ifisher_diag[j] * s.ifisher[:, j]).sum(1) * s.mask
         d[j] = -pj
         return d
-
 
 class KronOBS(LayerOBS):
     def __init__(self, model, scopes, fisher_type,world_size):
@@ -394,7 +395,6 @@ class KronOBS(LayerOBS):
         d = vec.mul_(-pj / s.ifisher_diag[j]).sum(1) * s.mask
         d[j] = -pj
         return d
-
 
 class NoneOBS(OptimalBrainSurgeon):
     def __init__(self, model, scopes, fisher_type,world_size):
