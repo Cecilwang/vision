@@ -13,11 +13,13 @@ from asdfghjkl.utils import add_value_to_diagonal, cholesky_inv
 def to_vector(parameters):
     return nn.utils.parameters_to_vector(parameters)
 
+
 def polynomial_schedule(start, end, i, n):
     scale = end - start
     progress = min(float(i) / n, 1.0)
     remaining_progress = (1.0 - progress)**2
     return end - scale * remaining_progress
+
 
 class Scope(object):
     def __init__(self, name, module):
@@ -79,13 +81,11 @@ class Scope(object):
     def init_mask(self):
         self.module.register_buffer("weight_mask",
                                     torch.ones_like(self.module.weight))
-        self.module.weight.register_hook(
-            lambda g: g * self.module.weight_mask)
+        self.module.weight.register_hook(lambda g: g * self.module.weight_mask)
         if self.has_bias:
             self.module.register_buffer("bias_mask",
                                         torch.ones_like(self.module.bias))
-            self.module.bias.register_hook(
-                lambda g: g * self.module.bias_mask)
+            self.module.bias.register_hook(lambda g: g * self.module.bias_mask)
 
     @property
     def weight_mask(self):
@@ -104,9 +104,11 @@ class Scope(object):
 
     @mask.setter
     def mask(self, mask):
-        self.module.weight_mask = mask[:self.n_weight].reshape(self.module.weight.shape)
+        self.module.weight_mask = mask[:self.n_weight].reshape(
+            self.module.weight.shape)
         if self.has_bias:
-            self.module.bias_mask = mask[self.n_weight:].reshape(self.module.bias.shape)
+            self.module.bias_mask = mask[self.n_weight:].reshape(
+                self.module.bias.shape)
 
     @property
     def grad(self):
@@ -242,8 +244,8 @@ class OptimalBrainSurgeon(object):
               damping=1e-3,
               n_recompute=1,
               n_recompute_samples=4096,
-              fisher_gb =10,
-              cb=lambda : None,
+              fisher_gb=10,
+              cb=lambda: None,
               check=False):
         #print("before pruning", torch.cuda.memory_allocated())
         init_n_zero = self.n_zero
@@ -265,20 +267,21 @@ class OptimalBrainSurgeon(object):
                 indices = indices[:n_pruned]
                 for s in self.scopes:
                     j = torch.where(indices < s.r, indices, 0)
-                    j = torch.where(s.l <= indices, j , 0)
+                    j = torch.where(s.l <= indices, j, 0)
                     j = indices[j.nonzero()].view(-1)
                     if self.fisher_shape != "none":
-                        stride = fisher_gb*1024*1024*1024//s.n_weight//4
-                        d = torch.zeros(self.n if self.fisher_shape == SHAPE_FULL else s.n).to(self.device)
+                        stride = fisher_gb * 1024 * 1024 * 1024 // s.n_weight // 4
+                        d = torch.zeros(self.n if self.fisher_shape ==
+                                        SHAPE_FULL else s.n).to(self.device)
                         for k in range(0, j.shape[0], stride):
-                            d += self._pruning_direction(s, j[k:k+stride])
+                            d += self._pruning_direction(s, j[k:k + stride])
                         if self.fisher_shape == SHAPE_FULL:
                             self.parameters_iadd(d)
                         else:
                             s.parameters_iadd(d)
                     s.prune(j - s.l, check=check)
                     self.n_zero += j.shape[0]
-                    print(".",end="")
+                    print(".", end="")
                 print()
             cb()
         #print("after pruning", torch.cuda.memory_allocated())
@@ -294,8 +297,8 @@ class OptimalBrainSurgeon(object):
 
 
 class FullOBS(OptimalBrainSurgeon):
-    def __init__(self, model, scopes, fisher_type,world_size):
-        super().__init__(model, scopes, fisher_type,world_size)
+    def __init__(self, model, scopes, fisher_type, world_size):
+        super().__init__(model, scopes, fisher_type, world_size)
         self.fisher_shape = SHAPE_FULL
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
@@ -303,7 +306,7 @@ class FullOBS(OptimalBrainSurgeon):
         fisher = getattr(self.model, self.fisher_type)
         mask = self.mask
         fisher.data *= mask.reshape([1, -1]) * mask.reshape([-1, 1])
-        if self.world_size>1:
+        if self.world_size > 1:
             dist.all_reduce(fisher.data, op=dist.ReduceOp.SUM)
             fisher.data /= self.world_size
         fisher.update_inv(damping)
@@ -316,14 +319,16 @@ class FullOBS(OptimalBrainSurgeon):
         return scores
 
     def _pruning_direction(self, s, i):
-        pi = s.parameters[i-s.l]
-        d = (-pi / self.ifisher_diag[i] * self.ifisher[:, i]).sum(1) * self.mask
+        pi = s.parameters[i - s.l]
+        d = (-pi / self.ifisher_diag[i] *
+             self.ifisher[:, i]).sum(1) * self.mask
         d[i] = -pi
         return d
 
+
 class LayerOBS(OptimalBrainSurgeon):
-    def __init__(self, model, scopes, fisher_type,world_size):
-        super().__init__(model, scopes, fisher_type,world_size)
+    def __init__(self, model, scopes, fisher_type, world_size):
+        super().__init__(model, scopes, fisher_type, world_size)
         self.fisher_shape = SHAPE_LAYER_WISE
         self.normalize = False
 
@@ -355,9 +360,10 @@ class LayerOBS(OptimalBrainSurgeon):
         d[j] = -pj
         return d
 
+
 class KronOBS(LayerOBS):
-    def __init__(self, model, scopes, fisher_type,world_size):
-        super().__init__(model, scopes, fisher_type,world_size)
+    def __init__(self, model, scopes, fisher_type, world_size):
+        super().__init__(model, scopes, fisher_type, world_size)
         self.fisher_shape = SHAPE_KRON
         self.normalize = False
         self.fast_inv = False
@@ -370,7 +376,8 @@ class KronOBS(LayerOBS):
                 # This method is wrong
                 # kron(inverse(A), inverse(B))*mask
                 fisher.update_inv(damping)
-                s.ifisher_diag = torch.kron(fisher.A_inv.diag(), fisher.B_inv.diag())*s.mask
+                s.ifisher_diag = torch.kron(fisher.A_inv.diag(),
+                                            fisher.B_inv.diag()) * s.mask
             else:
                 # (kron(A,B)*mask).inverse()
                 f = torch.kron(fisher.A, fisher.B)
@@ -389,16 +396,18 @@ class KronOBS(LayerOBS):
             fisher = getattr(s.module, self.fisher_type).kron
             a = fisher.A_inv[:, j // fisher.B.shape[1]]
             b = fisher.B_inv[:, j % fisher.B.shape[1]]
-            vec = torch.einsum("aj,bj->jab", a, b).view(j.shape[0],-1).transpose(0,1)
+            vec = torch.einsum("aj,bj->jab", a, b).view(j.shape[0],
+                                                        -1).transpose(0, 1)
         else:
-            vec =  s.ifisher[:, j]
+            vec = s.ifisher[:, j]
         d = vec.mul_(-pj / s.ifisher_diag[j]).sum(1) * s.mask
         d[j] = -pj
         return d
 
+
 class NoneOBS(OptimalBrainSurgeon):
-    def __init__(self, model, scopes, fisher_type,world_size):
-        super().__init__(model, scopes, fisher_type,world_size)
+    def __init__(self, model, scopes, fisher_type, world_size):
+        super().__init__(model, scopes, fisher_type, world_size)
         self.fisher_shape = "none"
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
@@ -408,14 +417,14 @@ class NoneOBS(OptimalBrainSurgeon):
         return torch.abs(self.parameters).masked_fill(self.mask == 0.0,
                                                       float("inf"))
 
-    def _pruning_direction(self,s, i):
+    def _pruning_direction(self, s, i):
         return None
 
 
 class FullWoodOBS(FullOBS):
     def __init__(self, model, scopes, fisher_type, world_size):
         assert fisher_type == FISHER_EMP
-        super().__init__(model, scopes, FISHER_EMP,world_size)
+        super().__init__(model, scopes, FISHER_EMP, world_size)
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
         N = None

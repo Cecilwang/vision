@@ -21,30 +21,61 @@ def parse_args():
 
     parser = argparse.ArgumentParser(description="Pruning")
 
-    parser.add_argument("--dataset", default="imagenet", type=str, help="dataset name")
-    parser.add_argument("--data-path", default="/datasets01/imagenet_full_size/061417/", type=str, help="dataset path")
-    parser.add_argument("--model", default="resnet50", type=str, help="model name")
-    parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
+    parser.add_argument("--dataset",
+                        default="imagenet",
+                        type=str,
+                        help="dataset name")
+    parser.add_argument("--data-path",
+                        default="/datasets01/imagenet_full_size/061417/",
+                        type=str,
+                        help="dataset path")
+    parser.add_argument("--model",
+                        default="resnet50",
+                        type=str,
+                        help="model name")
+    parser.add_argument("--device",
+                        default="cuda",
+                        type=str,
+                        help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
-        "-b", "--batch-size", default=128, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
-    )
+        "-b",
+        "--batch-size",
+        default=128,
+        type=int,
+        help="images per gpu, the total batch size is $NGPU x batch_size")
     parser.add_argument(
-        "--val-batch-size", default=512, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
-    )
+        "--val-batch-size",
+        default=512,
+        type=int,
+        help="images per gpu, the total batch size is $NGPU x batch_size")
     parser.add_argument(
-        "--fisher-batch-size", default=64, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
-    )
-    parser.add_argument(
-        "--fisher-gb", default=10, type=int
-    )
+        "--fisher-batch-size",
+        default=64,
+        type=int,
+        help="images per gpu, the total batch size is $NGPU x batch_size")
+    parser.add_argument("--fisher-gb", default=10, type=int)
 
-    parser.add_argument("--epochs", default=90, type=int, metavar="N", help="number of total epochs to run")
-    parser.add_argument(
-        "-j", "--workers", default=4, type=int, metavar="N", help="number of data loading workers (default: 16)"
-    )
+    parser.add_argument("--epochs",
+                        default=90,
+                        type=int,
+                        metavar="N",
+                        help="number of total epochs to run")
+    parser.add_argument("-j",
+                        "--workers",
+                        default=4,
+                        type=int,
+                        metavar="N",
+                        help="number of data loading workers (default: 16)")
     parser.add_argument("--opt", default="sgd", type=str, help="optimizer")
-    parser.add_argument("--lr", default=1e-3, type=float, help="initial learning rate")
-    parser.add_argument("--momentum", default=0.9, type=float, metavar="M", help="momentum")
+    parser.add_argument("--lr",
+                        default=1e-3,
+                        type=float,
+                        help="initial learning rate")
+    parser.add_argument("--momentum",
+                        default=0.9,
+                        type=float,
+                        metavar="M",
+                        help="momentum")
     parser.add_argument(
         "--wd",
         "--weight-decay",
@@ -58,13 +89,22 @@ def parse_args():
         "--norm-weight-decay",
         default=None,
         type=float,
-        help="weight decay for Normalization layers (default: None, same value as --wd)",
+        help=
+        "weight decay for Normalization layers (default: None, same value as --wd)",
     )
-    parser.add_argument(
-        "--label-smoothing", default=0.0, type=float, help="label smoothing (default: 0.0)", dest="label_smoothing"
-    )
-    parser.add_argument("--mixup-alpha", default=0.0, type=float, help="mixup alpha (default: 0.0)")
-    parser.add_argument("--cutmix-alpha", default=0.0, type=float, help="cutmix alpha (default: 0.0)")
+    parser.add_argument("--label-smoothing",
+                        default=0.0,
+                        type=float,
+                        help="label smoothing (default: 0.0)",
+                        dest="label_smoothing")
+    parser.add_argument("--mixup-alpha",
+                        default=0.0,
+                        type=float,
+                        help="mixup alpha (default: 0.0)")
+    parser.add_argument("--cutmix-alpha",
+                        default=0.0,
+                        type=float,
+                        help="cutmix alpha (default: 0.0)")
     #parser.add_argument("--lr-scheduler", default="steplr", type=str, help="the lr scheduler (default: steplr)")
     #parser.add_argument("--lr-warmup-epochs", default=0, type=int, help="the number of epochs to warmup (default: 0)")
     #parser.add_argument(
@@ -73,14 +113,28 @@ def parse_args():
     #parser.add_argument("--lr-warmup-decay", default=0.01, type=float, help="the decay for lr")
     #parser.add_argument("--lr-step-size", default=30, type=int, help="decrease lr every step-size epochs")
     #parser.add_argument("--lr-gamma", default=0.1, type=float, help="decrease lr by a factor of lr-gamma")
-    parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
-    parser.add_argument("--output-dir", default="./output", type=str, help="path to save outputs")
-    parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
-    parser.add_argument("--start-epoch", default=0, type=int, metavar="N", help="start epoch")
+    parser.add_argument("--print-freq",
+                        default=300,
+                        type=int,
+                        help="print frequency")
+    parser.add_argument("--output-dir",
+                        default="./output",
+                        type=str,
+                        help="path to save outputs")
+    parser.add_argument("--resume",
+                        default="",
+                        type=str,
+                        help="path of checkpoint")
+    parser.add_argument("--start-epoch",
+                        default=0,
+                        type=int,
+                        metavar="N",
+                        help="start epoch")
     parser.add_argument(
         "--cache-dataset",
         dest="cache_dataset",
-        help="Cache the datasets for quicker initialization. It also serializes the transforms",
+        help=
+        "Cache the datasets for quicker initialization. It also serializes the transforms",
         action="store_true",
     )
     parser.add_argument(
@@ -101,15 +155,27 @@ def parse_args():
     #    help="Use pre-trained models from the modelzoo",
     #    action="store_true",
     #)
-    parser.add_argument("--auto-augment", default=None, type=str, help="auto augment policy (default: None)")
-    parser.add_argument("--random-erase", default=0.0, type=float, help="random erasing probability (default: 0.0)")
+    parser.add_argument("--auto-augment",
+                        default=None,
+                        type=str,
+                        help="auto augment policy (default: None)")
+    parser.add_argument("--random-erase",
+                        default=0.0,
+                        type=float,
+                        help="random erasing probability (default: 0.0)")
 
     # Mixed precision training parameters
     #parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
 
     # distributed training parameters
-    parser.add_argument("--world-size", default=1, type=int, help="number of distributed processes")
-    parser.add_argument("--dist-url", default="env://", type=str, help="url used to set up distributed training")
+    parser.add_argument("--world-size",
+                        default=1,
+                        type=int,
+                        help="number of distributed processes")
+    parser.add_argument("--dist-url",
+                        default="env://",
+                        type=str,
+                        help="url used to set up distributed training")
     #parser.add_argument(
     #    "--model-ema", action="store_true", help="enable tracking Exponential Moving Average of model parameters"
     #)
@@ -126,28 +192,47 @@ def parse_args():
     #    help="decay factor for Exponential Moving Average of model parameters (default: 0.99998)",
     #)
     parser.add_argument(
-        "--use-deterministic-algorithms", action="store_true", help="Forces the use of deterministic algorithms only."
-    )
+        "--use-deterministic-algorithms",
+        action="store_true",
+        help="Forces the use of deterministic algorithms only.")
+    parser.add_argument("--interpolation",
+                        default="bilinear",
+                        type=str,
+                        help="the interpolation method (default: bilinear)")
     parser.add_argument(
-        "--interpolation", default="bilinear", type=str, help="the interpolation method (default: bilinear)"
-    )
+        "--val-resize-size",
+        default=256,
+        type=int,
+        help="the resize size used for validation (default: 256)")
     parser.add_argument(
-        "--val-resize-size", default=256, type=int, help="the resize size used for validation (default: 256)"
-    )
+        "--val-crop-size",
+        default=224,
+        type=int,
+        help="the central crop size used for validation (default: 224)")
     parser.add_argument(
-        "--val-crop-size", default=224, type=int, help="the central crop size used for validation (default: 224)"
-    )
+        "--train-crop-size",
+        default=224,
+        type=int,
+        help="the random crop size used for training (default: 224)")
+    parser.add_argument("--clip-grad-norm",
+                        default=None,
+                        type=float,
+                        help="the maximum gradient norm (default None)")
     parser.add_argument(
-        "--train-crop-size", default=224, type=int, help="the random crop size used for training (default: 224)"
-    )
-    parser.add_argument("--clip-grad-norm", default=None, type=float, help="the maximum gradient norm (default None)")
-    parser.add_argument("--ra-sampler", action="store_true", help="whether to use Repeated Augmentation in training")
+        "--ra-sampler",
+        action="store_true",
+        help="whether to use Repeated Augmentation in training")
     parser.add_argument(
-        "--ra-reps", default=3, type=int, help="number of repetitions for Repeated Augmentation (default: 3)"
-    )
+        "--ra-reps",
+        default=3,
+        type=int,
+        help="number of repetitions for Repeated Augmentation (default: 3)")
 
     # Prototype models only
-    parser.add_argument("--weights", default=None, type=str, help="the weights enum name to load")
+    parser.add_argument("--weights",
+                        default=None,
+                        type=str,
+                        help="the weights enum name to load")
 
     # Pruning
     parser.add_argument("--pruning_strategy",
@@ -199,7 +284,11 @@ def list_model(module, prefix="", condition=lambda _: True):
 
 
 def get_global_prnning_scope(model):
-    modules = list_model(model, condition=lambda x: (not isinstance(x, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.LayerNorm))) and hasattr(x, "weight"))
+    modules = list_model(
+        model,
+        condition=lambda x:
+        (not isinstance(x, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.
+                            LayerNorm))) and hasattr(x, "weight"))
     return [Scope(k, v) for k, v in modules.items()]
 
 
@@ -222,9 +311,11 @@ def wlog(a, e, n, s, args):
     if args.rank == 0:
         wandb.log({"acc": a, "epoch": e, "n_zero": n, "sparsity": s})
 
-def log(args, *v1,**v2):
+
+def log(args, *v1, **v2):
     if args.rank == 0:
-        print(*v1,**v2)
+        print(*v1, **v2)
+
 
 def polynomial_schedule(start, end, i, n):
     scale = end - start
@@ -232,38 +323,60 @@ def polynomial_schedule(start, end, i, n):
     remaining_progress = (1.0 - progress)**2
     return end - scale * remaining_progress
 
+
 def one_shot_pruning(obs, model, data_loaders, criterion, args):
     def _cb():
-        acc = evaluate(model, criterion, data_loaders["test"], device=args.device, log_suffix=f"[sparsity={obs.sparsity}]")
+        acc = evaluate(model,
+                       criterion,
+                       data_loaders["test"],
+                       device=args.device,
+                       log_suffix=f"[sparsity={obs.sparsity}]")
         wlog(acc, 0, obs.n_zero, obs.sparsity, args)
 
-    obs.prune(data_loaders["fisher"], args.sparsity, args.damping, args.n_recompute,
-              args.n_recompute_samples, args.fisher_gb, _cb, args.check)
+    obs.prune(data_loaders["fisher"], args.sparsity, args.damping,
+              args.n_recompute, args.n_recompute_samples, args.fisher_gb, _cb,
+              args.check)
 
 
-def gradual_pruning(obs, model, data_loaders, train_sampler,  opt, criterion, args):
+def gradual_pruning(obs, model, data_loaders, train_sampler, opt, criterion,
+                    args):
     prev_sparsity = 0.0
     for e in range(1, args.epochs + 1):
         log(args, f"Epoch {e}/{args.epochs}")
         sparsity = polynomial_schedule(0, args.sparsity, e, args.n_recompute)
         if sparsity != prev_sparsity:
-            obs.prune(data_loaders["fisher"], sparsity, args.damping, 1,
-                    args.n_recompute_samples, args.fisher_gb, check=args.check)
+            obs.prune(data_loaders["fisher"],
+                      sparsity,
+                      args.damping,
+                      1,
+                      args.n_recompute_samples,
+                      args.fisher_gb,
+                      check=args.check)
             prev_sparsity = sparsity
-            acc = evaluate(model, criterion, data_loaders["test"], device=args.device, log_suffix=f"[sparsity={obs.sparsity}]")
+            acc = evaluate(model,
+                           criterion,
+                           data_loaders["test"],
+                           device=args.device,
+                           log_suffix=f"[sparsity={obs.sparsity}]")
             wlog(acc, e, obs.n_zero, obs.sparsity, args)
 
         if args.distributed:
             train_sampler.set_epoch(e)
-        train_one_epoch(model, criterion, opt, data_loaders["train"], args.device, e, args)
+        train_one_epoch(model, criterion, opt, data_loaders["train"],
+                        args.device, e, args)
         obs.parameters = obs.parameters * obs.mask
 
-        acc = evaluate(model, criterion, data_loaders["test"], device=args.device, log_suffix=f"[sparsity={obs.sparsity}]")
+        acc = evaluate(model,
+                       criterion,
+                       data_loaders["test"],
+                       device=args.device,
+                       log_suffix=f"[sparsity={obs.sparsity}]")
         wlog(acc, e, obs.n_zero, obs.sparsity, args)
+
 
 def main():
     args = parse_args()
-    if args.resume=="":
+    if args.resume == "":
         args.pretrained = True
     args.output_dir = f"{args.output_dir}/{args.dataset}/{args.model}/" \
                f"{args.pruning_strategy}/" \
@@ -285,17 +398,22 @@ def main():
 
     train_dir = os.path.join(args.data_path, "train")
     val_dir = os.path.join(args.data_path, "val")
-    dataset, dataset_test, train_sampler, test_sampler = load_data(train_dir, val_dir, args)
+    dataset, dataset_test, train_sampler, test_sampler = load_data(
+        train_dir, val_dir, args)
     collate_fn = None
     num_classes = len(dataset.classes)
     mixup_transforms = []
     if args.mixup_alpha > 0.0:
-        mixup_transforms.append(transforms.RandomMixup(num_classes, p=1.0, alpha=args.mixup_alpha))
+        mixup_transforms.append(
+            transforms.RandomMixup(num_classes, p=1.0, alpha=args.mixup_alpha))
     if args.cutmix_alpha > 0.0:
-        mixup_transforms.append(transforms.RandomCutmix(num_classes, p=1.0, alpha=args.cutmix_alpha))
+        mixup_transforms.append(
+            transforms.RandomCutmix(num_classes,
+                                    p=1.0,
+                                    alpha=args.cutmix_alpha))
     if mixup_transforms:
         mixupcutmix = torchvision.transforms.RandomChoice(mixup_transforms)
-        collate_fn = lambda batch: mixupcutmix(*default_collate(batch))  # noqa: E731
+        collate_fn = lambda batch: mixupcutmix(*default_collate(batch))
     data_loaders = {}
     data_loaders["train"] = torch.utils.data.DataLoader(
         dataset,
@@ -313,11 +431,15 @@ def main():
         pin_memory=True,
     )
     data_loaders["test"] = torch.utils.data.DataLoader(
-        dataset_test, batch_size=args.val_batch_size, sampler=test_sampler, num_workers=args.workers, pin_memory=True
-    )
+        dataset_test,
+        batch_size=args.val_batch_size,
+        sampler=test_sampler,
+        num_workers=args.workers,
+        pin_memory=True)
 
     print("Creating model")
-    model = torchvision.models.__dict__[args.model](pretrained=args.pretrained, num_classes=num_classes)
+    model = torchvision.models.__dict__[args.model](pretrained=args.pretrained,
+                                                    num_classes=num_classes)
     model.to(args.device)
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -327,7 +449,10 @@ def main():
     else:
         param_groups = torchvision.ops._utils.split_normalization_params(model)
         wd_groups = [args.norm_weight_decay, args.weight_decay]
-        parameters = [{"params": p, "weight_decay": w} for p, w in zip(param_groups, wd_groups) if p]
+        parameters = [{
+            "params": p,
+            "weight_decay": w
+        } for p, w in zip(param_groups, wd_groups) if p]
 
     opt_name = args.opt.lower()
     if opt_name.startswith("sgd"):
@@ -339,22 +464,34 @@ def main():
             nesterov="nesterov" in opt_name,
         )
     elif opt_name == "rmsprop":
-        opt = torch.optim.RMSprop(
-            parameters, lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay, eps=0.0316, alpha=0.9
-        )
+        opt = torch.optim.RMSprop(parameters,
+                                  lr=args.lr,
+                                  momentum=args.momentum,
+                                  weight_decay=args.weight_decay,
+                                  eps=0.0316,
+                                  alpha=0.9)
     elif opt_name == "adamw":
-        opt = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=args.weight_decay)
+        opt = torch.optim.AdamW(parameters,
+                                lr=args.lr,
+                                weight_decay=args.weight_decay)
     else:
-        raise RuntimeError(f"Invalid optimizer {args.opt}. Only SGD, RMSprop and AdamW are supported.")
+        raise RuntimeError(
+            f"Invalid optimizer {args.opt}. Only SGD, RMSprop and AdamW are supported."
+        )
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(
+            model, device_ids=[args.gpu])
         model_without_ddp = model.module
 
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
 
-    acc = evaluate(model, criterion, data_loaders["test"], device=args.device, log_suffix="Pretrained")
+    acc = evaluate(model,
+                   criterion,
+                   data_loaders["test"],
+                   device=args.device,
+                   log_suffix="Pretrained")
     wlog(acc, 0, 0, 0.0, args)
 
     print("Pruning model")
@@ -364,7 +501,8 @@ def main():
     if args.pruning_strategy == "oneshot":
         one_shot_pruning(obs, model, data_loaders, criterion, args)
     else:
-        gradual_pruning(obs, model, data_loaders, train_sampler, opt, criterion, args)
+        gradual_pruning(obs, model, data_loaders, train_sampler, opt,
+                        criterion, args)
 
     log(args, obs)
 
