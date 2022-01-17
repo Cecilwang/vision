@@ -340,11 +340,10 @@ def one_shot_pruning(obs, model, data_loaders, criterion, args):
 
 def gradual_pruning(obs, model, data_loaders, train_sampler, opt, criterion,
                     args):
-    prev_sparsity = 0.0
     for e in range(1, args.epochs + 1):
         log(args, f"Epoch {e}/{args.epochs}")
-        sparsity = polynomial_schedule(0, args.sparsity, e, args.n_recompute)
-        if sparsity != prev_sparsity:
+        if e == 1 or ((e % 5 == 0) and e<=40):
+            sparsity = 0.05 if e == 1 else polynomial_schedule(0, args.sparsity, e//5, 40//5)
             obs.prune(data_loaders["fisher"],
                       sparsity,
                       args.damping,
@@ -352,7 +351,6 @@ def gradual_pruning(obs, model, data_loaders, train_sampler, opt, criterion,
                       args.n_recompute_samples,
                       args.fisher_gb,
                       check=args.check)
-            prev_sparsity = sparsity
             acc = evaluate(model,
                            criterion,
                            data_loaders["test"],

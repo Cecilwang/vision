@@ -281,6 +281,7 @@ class OptimalBrainSurgeon(object):
                             s.parameters_iadd(d)
                     s.prune(j - s.l, check=check)
                     self.n_zero += j.shape[0]
+                    torch.cuda.empty_cache()
                     print(".", end="")
                 print()
             cb()
@@ -338,6 +339,9 @@ class LayerOBS(OptimalBrainSurgeon):
             fisher = getattr(s.module, self.fisher_type)
             mask = s.mask
             fisher.data *= mask.reshape([1, -1]) * mask.reshape([-1, 1])
+            if self.world_size > 1:
+                dist.all_reduce(fisher.data, op=dist.ReduceOp.SUM)
+                fisher.data /= self.world_size
             fisher.update_inv(damping)
             s.ifisher = fisher.inv
             s.ifisher_diag = fisher.inv.diag()
@@ -372,6 +376,11 @@ class KronOBS(LayerOBS):
         super(LayerOBS, self)._calc_fisher(loader, n_samples, damping)
         for s in self.scopes:
             fisher = getattr(s.module, self.fisher_type).kron
+            if self.world_size > 1:
+                dist.all_reduce(fisher.A, op=dist.ReduceOp.SUM)
+                fisher.A /= self.world_size
+                dist.all_reduce(fisher.B, op=dist.ReduceOp.SUM)
+                fisher.B /= self.world_size
             if self.fast_inv:
                 # This method is wrong
                 # kron(inverse(A), inverse(B))*mask

@@ -1,20 +1,30 @@
 #!/bin/bash
 
-# yrun any_1
-# ybatch yokota-job
-
 #SBATCH -J prunning
-#YBATCH -r am_1
+#YBATCH -r am_8
 #SBATCH -N 1
-#SBATCH -o .log/log
+#YBATCH -l h_rt=72:00:00
 
 source /etc/profile.d/modules.sh
 module load cuda/11.4
-module load cudnn
+module load cudnn/cuda-11.4
 
 source $HOME/vir/py3/bin/activate
 export PYTHONPATH=$PYTHONPATH:$HOME/asdfghjkl
 
-wandb agent cecilwang/pruning/z5jt7h0l
+#wandb agent cecilwang/pruning/z5jt7h0l
 #wandb agent cecilwang/pruning/udpkzcuc
 #python pruning.py --no-pretrain --device=cuda --model=toy2 --e=50 --lr=0.001 --batch=256
+
+torchrun \
+  --standalone \
+  --nnodes=1 \
+  --nproc_per_node=8 \
+    pruning.py \
+      --model=resnet50 \
+      --data-path=/mnt/nfs/datasets/ILSVRC2012 \
+      --kfac_fast_inv \
+      --fisher_shape=kron \
+      --pruning_strategy=gradual \
+      --sparsity=0.8 \
+      --fisher-gb=8
