@@ -68,7 +68,7 @@ def parse_args():
                         help="number of data loading workers (default: 16)")
     parser.add_argument("--opt", default="sgd", type=str, help="optimizer")
     parser.add_argument("--lr",
-                        default=1e-3,
+                        default=5e-3,
                         type=float,
                         help="initial learning rate")
     parser.add_argument("--momentum",
@@ -105,14 +105,12 @@ def parse_args():
                         default=0.0,
                         type=float,
                         help="cutmix alpha (default: 0.0)")
-    #parser.add_argument("--lr-scheduler", default="steplr", type=str, help="the lr scheduler (default: steplr)")
+    parser.add_argument("--lr-scheduler", default="steplr", type=str, help="the lr scheduler (default: steplr)")
     #parser.add_argument("--lr-warmup-epochs", default=0, type=int, help="the number of epochs to warmup (default: 0)")
-    #parser.add_argument(
-    #    "--lr-warmup-method", default="constant", type=str, help="the warmup method (default: constant)"
-    #)
-    #parser.add_argument("--lr-warmup-decay", default=0.01, type=float, help="the decay for lr")
-    #parser.add_argument("--lr-step-size", default=30, type=int, help="decrease lr every step-size epochs")
-    #parser.add_argument("--lr-gamma", default=0.1, type=float, help="decrease lr by a factor of lr-gamma")
+    #parser.add_argument("--lr-warmup-method", default="constant", type=str, help="the warmup method (default: constant)")
+    #parser.add_argument("--lr-warmup-decay", default=1., type=float, help="the decay for lr")
+    parser.add_argument("--lr-step-size", default=6, type=int, help="decrease lr every step-size epochs")
+    parser.add_argument("--lr-gamma", default=0.6, type=float, help="decrease lr by a factor of lr-gamma")
     parser.add_argument("--print-freq",
                         default=300,
                         type=int,
@@ -239,6 +237,14 @@ def parse_args():
                         type=str,
                         default="oneshot",
                         choices=["oneshot", "gradual"])
+    parser.add_argument("--pruning_epochs",
+                        default=40,
+                        type=int,
+                        metavar="N")
+    parser.add_argument("--pruning_intvl",
+                        default=5,
+                        type=int,
+                        metavar="N")
     parser.add_argument("--fisher_type",
                         type=str,
                         default="fisher_emp",
@@ -307,9 +313,9 @@ def create_obs(model, scopes, args):
     return obs
 
 
-def wlog(a, e, n, s, args):
+def wlog(args, kargs):
     if args.rank == 0:
-        wandb.log({"acc": a, "epoch": e, "n_zero": n, "sparsity": s})
+        wandb.log(kargs)
 
 
 def log(args, *v1, **v2):
@@ -325,25 +331,29 @@ def polynomial_schedule(start, end, i, n):
 
 
 def one_shot_pruning(obs, model, data_loaders, criterion, args):
+    acc = 0
     def _cb():
+        nonlocal acc
         acc = evaluate(model,
                        criterion,
                        data_loaders["test"],
                        device=args.device,
                        log_suffix=f"[sparsity={obs.sparsity}]")
-        wlog(acc, 0, obs.n_zero, obs.sparsity, args)
+        wlog(args, {"best_acc":acc, "sparsity":obs.sparsity})
 
     obs.prune(data_loaders["fisher"], args.sparsity, args.damping,
               args.n_recompute, args.n_recompute_samples, args.fisher_gb, _cb,
               args.check)
+    return acc
 
 
-def gradual_pruning(obs, model, data_loaders, train_sampler, opt, criterion,
+def gradual_pruning(obs, model, data_loaders, train_sampler, opt, lr_scheduler, criterion,
                     args):
-    for e in range(1, args.epochs + 1):
+    best_acc = 0.0
+    for e in range(args.epochs):
         log(args, f"Epoch {e}/{args.epochs}")
-        if e == 1 or ((e % 5 == 0) and e<=40):
-            sparsity = 0.05 if e == 1 else polynomial_schedule(0, args.sparsity, e//5, 40//5)
+        if e % args.pruning_intvl == 0 and e<=args.pruning_epochs:
+            sparsity = polynomial_schedule(0.05, args.sparsity, e//args.pruning_intvl, args.pruning_epochs//args.pruning_intvl)
             obs.prune(data_loaders["fisher"],
                       sparsity,
                       args.damping,
@@ -356,10 +366,13 @@ def gradual_pruning(obs, model, data_loaders, train_sampler, opt, criterion,
                            data_loaders["test"],
                            device=args.device,
                            log_suffix=f"[sparsity={obs.sparsity}]")
-            wlog(acc, e, obs.n_zero, obs.sparsity, args)
+            wlog(args, {"acc":acc, "epoch":e})
+            best_acc =acc
 
         if args.distributed:
             train_sampler.set_epoch(e)
+        if e>args.pruning_epochs and (e-args.pruning_epochs)%args.lr_step_size==0:
+            lr_scheduler.step()
         train_one_epoch(model, criterion, opt, data_loaders["train"],
                         args.device, e, args)
         obs.parameters = obs.parameters * obs.mask
@@ -369,7 +382,11 @@ def gradual_pruning(obs, model, data_loaders, train_sampler, opt, criterion,
                        data_loaders["test"],
                        device=args.device,
                        log_suffix=f"[sparsity={obs.sparsity}]")
-        wlog(acc, e, obs.n_zero, obs.sparsity, args)
+        wlog(args, {"acc":acc, "epoch":e, "lr":lr_scheduler.get_last_lr()})
+        best_acc = max(best_acc, acc)
+        if (e%(args.pruning_intvl-1)==0 and e<=args.pruning_epochs) or (e==args.epochs-1):
+            wlog(args, {"best_acc":best_acc, "sparsity":obs.sparsity})
+    return best_acc
 
 
 def main():
@@ -377,7 +394,7 @@ def main():
     if args.resume == "":
         args.pretrained = True
     args.output_dir = f"{args.output_dir}/{args.dataset}/{args.model}/" \
-               f"{args.pruning_strategy}/" \
+               f"{args.pruning_strategy}/{args.sparsity}" \
                f"{args.fisher_type}/{args.fisher_shape}/" \
                f"{args.n_recompute}-{args.n_recompute_samples}"
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -386,7 +403,10 @@ def main():
 
     if args.rank == 0:
         wandb.init(project="pruning")
-        wandb.run.name = args.output_dir
+        wandb.run.name = f"{args.dataset}/{args.model}/" \
+               f"{args.pruning_strategy}/{args.sparsity}" \
+               f"{args.fisher_type}/{args.fisher_shape}/" \
+               f"{args.n_recompute}-{args.n_recompute_samples}"
 
     if args.use_deterministic_algorithms:
         torch.backends.cudnn.benchmark = False
@@ -477,6 +497,21 @@ def main():
             f"Invalid optimizer {args.opt}. Only SGD, RMSprop and AdamW are supported."
         )
 
+    args.lr_scheduler = args.lr_scheduler.lower()
+    if args.lr_scheduler == "steplr":
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=1, gamma=args.lr_gamma)
+    elif args.lr_scheduler == "cosineannealinglr":
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=args.epochs - args.pruning_epochs
+        )
+    elif args.lr_scheduler == "exponentiallr":
+        lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=args.lr_gamma)
+    else:
+        raise RuntimeError(
+            f"Invalid lr scheduler '{args.lr_scheduler}'. Only StepLR, CosineAnnealingLR and ExponentialLR "
+            "are supported."
+        )
+
     model_without_ddp = model
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(
@@ -485,24 +520,24 @@ def main():
 
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
 
-    acc = evaluate(model,
+    pretrained_acc = evaluate(model,
                    criterion,
                    data_loaders["test"],
                    device=args.device,
                    log_suffix="Pretrained")
-    wlog(acc, 0, 0, 0.0, args)
+    wlog(args, {"best_acc":pretrained, "sparsity":0.0})
 
     print("Pruning model")
     scopes = get_global_prnning_scope(model)
     obs = create_obs(model, scopes, args)
 
     if args.pruning_strategy == "oneshot":
-        one_shot_pruning(obs, model, data_loaders, criterion, args)
+        pruned_acc = one_shot_pruning(obs, model, data_loaders, criterion, args)
     else:
-        gradual_pruning(obs, model, data_loaders, train_sampler, opt,
+        pruned_acc = gradual_pruning(obs, model, data_loaders, train_sampler, opt, lr_scheduler,
                         criterion, args)
-
     log(args, obs)
+    wlog({"pruned_acc":pruned_acc, "drop_rate":(pruned_acc - pretrained_acc) / pretrained_acc})
 
 
 if __name__ == "__main__":

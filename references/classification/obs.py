@@ -247,7 +247,6 @@ class OptimalBrainSurgeon(object):
               fisher_gb=10,
               cb=lambda: None,
               check=False):
-        #print("before pruning", torch.cuda.memory_allocated())
         init_n_zero = self.n_zero
         target_n_zero = int(self.n * sparsity)
 
@@ -285,7 +284,7 @@ class OptimalBrainSurgeon(object):
                     print(".", end="")
                 print()
             cb()
-        #print("after pruning", torch.cuda.memory_allocated())
+        #print(torch.cuda.memory_allocated())
 
     @property
     def sparsity(self):
@@ -453,3 +452,82 @@ class FullWoodOBS(FullOBS):
 
         self.ifisher = fisher_inv
         self.ifisher_diag = fisher_inv.diag()
+
+
+class IFVP():
+    def __init__(self, grads, mask, damping, check=True):
+        self.n, self.d  = grads.shape[0], grads.shape[1]
+        self.damping = 1./damping
+        self.v = torch.zeros((self.n, self.d), device=grads.device)
+        self.q = torch.zeros(self.n, device=grads.device)
+
+        iF = torch.eye(self.d) * damping
+        for i, g in enumerate(grads):
+            g = g*mask
+            ifg = iF@g
+            self.v[i,:] = ifg
+            self.q[i] = self.n+torch.inner(g, ifg)
+            iF -= torch.outer(ifg, ifg) / (self.n + g.T @ ifg)
+
+        self.check = check
+        if self.check:
+            self.iF = iF
+        else:
+            del iF
+
+    def __call__(self, x):
+        res =  x * self.damping - self.v.T @ (self.v @ x / self.q)
+        if self.check:
+            torch.testing.assert_close(res, self.iF @ x)
+        return res
+
+    def diag(self):
+        res = self.damping * torch.ones(self.d, device=self.v.device)
+        for i in range(self.n):
+            res -= (self.v[i, :] ** 2) / self.q[i].reshape((-1, 1))
+        if self.check:
+            torch.testing.assert_close(res, self.iF.diag())
+        return res
+
+    def column(self, j):
+        res = self.damping * torch.ones(self.d, device=self.v.device)
+        for i in range(self.n):
+            res -= (self.v[i, :] * self.v[j, :]) / self.q[i].reshape((-1, 1))
+        if self.check:
+            torch.testing.assert_close(res, self.iF[:,j])
+        return res
+
+
+class BlockWoodOBS(OptimalBrainSurgeon):
+    def __init__(self, model, scopes,block_size, fisher_type, world_size):
+        assert fisher_type == FISHER_EMP
+        super().__init__(model, scopes, fisher_type, world_size)
+        self.fisher_shape = "block"
+        self.block_size = block_size
+        self.ifvp = None
+
+    def _calc_fisher(self, loader, n_samples, damping=1e-3):
+        grads = []
+        for inputs, targets in self._gen_samples(loader, n_samples):
+            nn.CrossEntropyLoss()(self.model(inputs), targets).backward()
+            grads.append(self.grad)
+        grads = torch.vstack(grads)
+        grads = torch.split(grads, self.block_size, dim=1)
+        masks = torch.split(self.mask, self.block_size)
+        self.ifvp = []
+        for g,m in zip(grads, masks):
+            self.ifvp.append(IFVP(g,m,damping))
+        self.ifisher_diag = torch.hstack([x.diag() for x in self.ifvp])
+
+
+    def _get_scores(self):
+        scores = self.parameters.pow(2) / self.ifisher_diag
+        scores = scores.masked_fill(self.mask == 0.0, float("inf"))
+        return scores
+
+    def _pruning_direction(self, s, i):
+        pi = s.parameters[i - s.l]
+        d = (-pi / self.ifisher_diag[i] * torch.hstack([x.column(i) for x in self.ifvp])
+             ).sum(1) * self.mask
+        d[i] = -pi
+        return d

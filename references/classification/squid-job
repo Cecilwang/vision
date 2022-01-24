@@ -1,0 +1,34 @@
+#!/bin/bash
+#------- qsub option -----------
+#PBS -q SQUID-H
+#PBS --group=jh210024
+#PBS -N pruning
+#PBS -j o
+#PBS -b 1
+#PBS -l gpunum_job=8
+#PBS -l elapstim_req=20:00:00
+
+module load BaseGPU/2021
+source /sqfs/home/z6b038/vir/py3/bin/activate
+
+export WANDB_MODE=offline
+export PYTHONPATH=$PYTHONPATH:/sqfs/home/z6b038/asdfghjkl
+
+cd $PBS_O_WORKDIR
+
+torchrun \
+ --standalone \
+ --nnodes=1 \
+ --nproc_per_node=8 \
+   pruning.py \
+     --model=resnet50 \
+     --data-path=/sqfs/work/jh210024/data/ILSVRC2012 \
+     --kfac_fast_inv \
+     --fisher_shape=none \
+     --pruning_strategy=gradual \
+     --sparsity=0.8 \
+     --batch-size=256 \
+     --fisher-batch-size=128 \
+     --val-batch-size=2048 \
+     --fisher-gb=18 \
+     --check
