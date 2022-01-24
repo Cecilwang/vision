@@ -1,0 +1,13 @@
+python pruning.py \
+     --model=toy2 \
+     --dataset=MNIST \
+     --data-path=.data \
+     --train-crop-size=32 \
+     --fisher_shape=block_wood \
+     --pruning_strategy=gradual \
+     --epochs=20 \
+     --pruning_epochs=10 \
+     --pruning_intvl=2 \
+     --sparsity=0.8 \
+     --device=cpu \
+     --check

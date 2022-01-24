@@ -2,6 +2,7 @@ import math
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 import torch.distributed as dist
 
 from asdfghjkl import fisher_for_cross_entropy
@@ -429,82 +430,101 @@ class NoneOBS(OptimalBrainSurgeon):
         return None
 
 
-class FullWoodOBS(FullOBS):
-    def __init__(self, model, scopes, fisher_type, world_size):
-        assert fisher_type == FISHER_EMP
-        super().__init__(model, scopes, FISHER_EMP, world_size)
-
-    def _calc_fisher(self, loader, n_samples, damping=1e-3):
-        N = None
-        fisher_inv = torch.eye(self.n) / (damping**2)
-
-        for inputs, targets in self._gen_samples(loader, n_samples):
-            if N is None:
-                if n_samples == -1:
-                    N = len(loader)
-                else:
-                    N = math.ceil(n_samples / len(inputs))
-            nn.CrossEntropyLoss()(self.model(inputs), targets).backward()
-            with torch.no_grad():
-                g = self.grad * self.mask
-                fg = fisher_inv @ g
-                fisher_inv -= torch.outer(fg, fg) / (N + g.T @ fg)
-
-        self.ifisher = fisher_inv
-        self.ifisher_diag = fisher_inv.diag()
-
-
 class IFVP():
-    def __init__(self, grads, mask, damping, check=True):
-        self.n, self.d  = grads.shape[0], grads.shape[1]
-        self.damping = 1./damping
+    def __init__(self, grads, damping, check=False):
+        self.n, self.d = grads.shape[0], grads.shape[1]
+        self.damping = 1. / damping
+
         self.v = torch.zeros((self.n, self.d), device=grads.device)
         self.q = torch.zeros(self.n, device=grads.device)
 
-        iF = torch.eye(self.d) * damping
-        for i, g in enumerate(grads):
-            g = g*mask
-            ifg = iF@g
-            self.v[i,:] = ifg
-            self.q[i] = self.n+torch.inner(g, ifg)
-            iF -= torch.outer(ifg, ifg) / (self.n + g.T @ ifg)
+        self.v[0, :] = self.damping * grads[0, :]
+        self.q[0] = self.n + torch.inner(self.v[0, :], grads[0, :])
+        for i, g in enumerate(grads[1:]):
+            i += 1
+            self.v[i, :] = self.damping * g - (self.v[:i, :] @ g /
+                                               self.q[:i]).T @ self.v[:i]
+            self.q[i] = self.n + torch.inner(self.v[i, :], g)
 
         self.check = check
         if self.check:
-            self.iF = iF
-        else:
-            del iF
+            self.iF = self.damping * torch.eye(self.d)
+            for i, g in enumerate(grads):
+                ifg = self.iF @ g
+                #print(ifg)
+                #print(self.v[i, :])
+                #torch.testing.assert_close(ifg, self.v[i, :])
+                #print(self.n + g.T @ ifg)
+                #print(self.q[i])
+                #torch.testing.assert_close(self.n + g.T @ ifg, self.q[i])
+                self.iF -= torch.outer(ifg, ifg) / (self.n + g.T @ ifg)
+            print("ifsher")
+            print(self.iF)
 
     def __call__(self, x):
-        res =  x * self.damping - self.v.T @ (self.v @ x / self.q)
+        assert x.ndim == 2
+        res = self.damping * x - self.v.T @ (self.v @ x /
+                                             self.q.reshape(-1, 1))
         if self.check:
-            torch.testing.assert_close(res, self.iF @ x)
+            print(res)
+            print(self.iF @ x)
+            torch.testing.assert_close(res, self.iF @ x, rtol=1e-4, atol=1e-4)
         return res
 
     def diag(self):
         res = self.damping * torch.ones(self.d, device=self.v.device)
         for i in range(self.n):
-            res -= (self.v[i, :] ** 2) / self.q[i].reshape((-1, 1))
+            res -= (self.v[i, :]**2) / self.q[i]
         if self.check:
+            print(res)
+            print(self.iF.diag())
             torch.testing.assert_close(res, self.iF.diag())
         return res
 
-    def column(self, j):
-        res = self.damping * torch.ones(self.d, device=self.v.device)
-        for i in range(self.n):
-            res -= (self.v[i, :] * self.v[j, :]) / self.q[i].reshape((-1, 1))
+    def column(self, i):
+        assert i.ndim == 1
+        res = self(F.one_hot(i, self.d).type(self.v.dtype).transpose(1, 0))
         if self.check:
-            torch.testing.assert_close(res, self.iF[:,j])
+            torch.testing.assert_close(res, self.iF[:, i])
         return res
 
 
-class BlockWoodOBS(OptimalBrainSurgeon):
-    def __init__(self, model, scopes,block_size, fisher_type, world_size):
+class FullWoodOBS(FullOBS):
+    def __init__(self, model, scopes, fisher_type, world_size):
         assert fisher_type == FISHER_EMP
         super().__init__(model, scopes, fisher_type, world_size)
-        self.fisher_shape = "block"
-        self.block_size = block_size
+        #self.fisher_shape = "full_wood"
         self.ifvp = None
+
+    def _calc_fisher(self, loader, n_samples, damping=1e-3):
+        grads = []
+        for inputs, targets in self._gen_samples(loader, n_samples):
+            nn.CrossEntropyLoss()(self.model(inputs), targets).backward()
+            grads.append(self.grad)
+        grads = torch.vstack(grads)
+        self.ifvp = IFVP(grads * mask, damping)
+        self.ifisher_diag = self.ifvp.diag()
+
+    def ifsher_column(self, i):
+        return self.ifvp.column(i)
+
+    def _pruning_direction(self, s, i):
+        pi = s.parameters[i - s.l]
+        d = (-pi / self.ifisher_diag[i] *
+             self.ifsher_column(i)).sum(1) * self.mask
+        d[i] = -pi
+        return d
+
+
+class BlockWoodOBS(FullWoodOBS):
+    def __init__(self, model, scopes, fisher_type, world_size):
+        assert fisher_type == FISHER_EMP
+        super().__init__(model, scopes, fisher_type, world_size)
+        #self.fisher_shape = "block_wood"
+        self.block_size = None
+
+    def set_block_size(self, block_size):
+        self.block_size = block_size
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
         grads = []
@@ -515,19 +535,9 @@ class BlockWoodOBS(OptimalBrainSurgeon):
         grads = torch.split(grads, self.block_size, dim=1)
         masks = torch.split(self.mask, self.block_size)
         self.ifvp = []
-        for g,m in zip(grads, masks):
-            self.ifvp.append(IFVP(g,m,damping))
+        for g, m in zip(grads, masks):
+            self.ifvp.append(IFVP(g * m, damping))
         self.ifisher_diag = torch.hstack([x.diag() for x in self.ifvp])
 
-
-    def _get_scores(self):
-        scores = self.parameters.pow(2) / self.ifisher_diag
-        scores = scores.masked_fill(self.mask == 0.0, float("inf"))
-        return scores
-
-    def _pruning_direction(self, s, i):
-        pi = s.parameters[i - s.l]
-        d = (-pi / self.ifisher_diag[i] * torch.hstack([x.column(i) for x in self.ifvp])
-             ).sum(1) * self.mask
-        d[i] = -pi
-        return d
+    def ifsher_column(self, i):
+        return torch.hstack([x.column(i) for x in self.ifvp])

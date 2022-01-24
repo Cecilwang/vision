@@ -263,6 +263,7 @@ def init_distributed_mode(args):
         pass
     else:
         print("Not using distributed mode")
+        args.rank = 0
         args.distributed = False
         return
 

@@ -12,8 +12,11 @@ from asdfghjkl import SHAPE_FULL, SHAPE_LAYER_WISE, SHAPE_KRON, SHAPE_DIAG
 import transforms
 from train import train_one_epoch, evaluate, load_data
 import utils
+
+from models import Toy2
+from datasets import get_data
 from obs import Scope
-from obs import FullOBS, LayerOBS, KronOBS, NoneOBS, FullWoodOBS
+from obs import FullOBS, LayerOBS, KronOBS, NoneOBS, FullWoodOBS, BlockWoodOBS
 
 
 def parse_args():
@@ -105,12 +108,21 @@ def parse_args():
                         default=0.0,
                         type=float,
                         help="cutmix alpha (default: 0.0)")
-    parser.add_argument("--lr-scheduler", default="steplr", type=str, help="the lr scheduler (default: steplr)")
+    parser.add_argument("--lr-scheduler",
+                        default="steplr",
+                        type=str,
+                        help="the lr scheduler (default: steplr)")
     #parser.add_argument("--lr-warmup-epochs", default=0, type=int, help="the number of epochs to warmup (default: 0)")
     #parser.add_argument("--lr-warmup-method", default="constant", type=str, help="the warmup method (default: constant)")
     #parser.add_argument("--lr-warmup-decay", default=1., type=float, help="the decay for lr")
-    parser.add_argument("--lr-step-size", default=6, type=int, help="decrease lr every step-size epochs")
-    parser.add_argument("--lr-gamma", default=0.6, type=float, help="decrease lr by a factor of lr-gamma")
+    parser.add_argument("--lr-step-size",
+                        default=6,
+                        type=int,
+                        help="decrease lr every step-size epochs")
+    parser.add_argument("--lr-gamma",
+                        default=0.6,
+                        type=float,
+                        help="decrease lr by a factor of lr-gamma")
     parser.add_argument("--print-freq",
                         default=300,
                         type=int,
@@ -237,14 +249,8 @@ def parse_args():
                         type=str,
                         default="oneshot",
                         choices=["oneshot", "gradual"])
-    parser.add_argument("--pruning_epochs",
-                        default=40,
-                        type=int,
-                        metavar="N")
-    parser.add_argument("--pruning_intvl",
-                        default=5,
-                        type=int,
-                        metavar="N")
+    parser.add_argument("--pruning_epochs", default=40, type=int, metavar="N")
+    parser.add_argument("--pruning_intvl", default=5, type=int, metavar="N")
     parser.add_argument("--fisher_type",
                         type=str,
                         default="fisher_emp",
@@ -254,8 +260,9 @@ def parse_args():
                         default="full",
                         choices=[
                             "full", "layer_wise", "kron", "unit_wise",
-                            "full_wood", "none"
+                            "full_wood", "block_wood", "none"
                         ])
+    parser.add_argument("--block_size", type=int, default=5000)
     parser.add_argument(
         "--layer_normalize",
         dest="layer_normalize",
@@ -304,8 +311,11 @@ def create_obs(model, scopes, args):
         SHAPE_LAYER_WISE: LayerOBS,
         SHAPE_KRON: KronOBS,
         "full_wood": FullWoodOBS,
+        "block_wood": BlockWoodOBS,
         "none": NoneOBS
     }[args.fisher_shape](model, scopes, args.fisher_type, args.world_size)
+    if args.fisher_shape == "block_wood":
+        obs.set_block_size(args.block_size)
     if args.fisher_shape in [SHAPE_KRON, SHAPE_LAYER_WISE]:
         obs.normalize = args.layer_normalize
     if args.fisher_shape == SHAPE_KRON:
@@ -332,6 +342,7 @@ def polynomial_schedule(start, end, i, n):
 
 def one_shot_pruning(obs, model, data_loaders, criterion, args):
     acc = 0
+
     def _cb():
         nonlocal acc
         acc = evaluate(model,
@@ -339,7 +350,7 @@ def one_shot_pruning(obs, model, data_loaders, criterion, args):
                        data_loaders["test"],
                        device=args.device,
                        log_suffix=f"[sparsity={obs.sparsity}]")
-        wlog(args, {"best_acc":acc, "sparsity":obs.sparsity})
+        wlog(args, {"best_acc": acc, "sparsity": obs.sparsity})
 
     obs.prune(data_loaders["fisher"], args.sparsity, args.damping,
               args.n_recompute, args.n_recompute_samples, args.fisher_gb, _cb,
@@ -347,13 +358,15 @@ def one_shot_pruning(obs, model, data_loaders, criterion, args):
     return acc
 
 
-def gradual_pruning(obs, model, data_loaders, train_sampler, opt, lr_scheduler, criterion,
-                    args):
+def gradual_pruning(obs, model, data_loaders, train_sampler, opt, lr_scheduler,
+                    criterion, args):
     best_acc = 0.0
     for e in range(args.epochs):
         log(args, f"Epoch {e}/{args.epochs}")
-        if e % args.pruning_intvl == 0 and e<=args.pruning_epochs:
-            sparsity = polynomial_schedule(0.05, args.sparsity, e//args.pruning_intvl, args.pruning_epochs//args.pruning_intvl)
+        if e % args.pruning_intvl == 0 and e <= args.pruning_epochs:
+            sparsity = polynomial_schedule(
+                0.05, args.sparsity, e // args.pruning_intvl,
+                args.pruning_epochs // args.pruning_intvl)
             obs.prune(data_loaders["fisher"],
                       sparsity,
                       args.damping,
@@ -366,12 +379,13 @@ def gradual_pruning(obs, model, data_loaders, train_sampler, opt, lr_scheduler, 
                            data_loaders["test"],
                            device=args.device,
                            log_suffix=f"[sparsity={obs.sparsity}]")
-            wlog(args, {"acc":acc, "epoch":e})
-            best_acc =acc
+            wlog(args, {"acc": acc, "epoch": e})
+            best_acc = acc
 
         if args.distributed:
             train_sampler.set_epoch(e)
-        if e>args.pruning_epochs and (e-args.pruning_epochs)%args.lr_step_size==0:
+        if e > args.pruning_epochs and (
+                e - args.pruning_epochs) % args.lr_step_size == 0:
             lr_scheduler.step()
         train_one_epoch(model, criterion, opt, data_loaders["train"],
                         args.device, e, args)
@@ -382,10 +396,11 @@ def gradual_pruning(obs, model, data_loaders, train_sampler, opt, lr_scheduler, 
                        data_loaders["test"],
                        device=args.device,
                        log_suffix=f"[sparsity={obs.sparsity}]")
-        wlog(args, {"acc":acc, "epoch":e, "lr":lr_scheduler.get_last_lr()})
+        wlog(args, {"acc": acc, "epoch": e, "lr": opt.param_groups[0]["lr"]})
         best_acc = max(best_acc, acc)
-        if (e%(args.pruning_intvl-1)==0 and e<=args.pruning_epochs) or (e==args.epochs-1):
-            wlog(args, {"best_acc":best_acc, "sparsity":obs.sparsity})
+        if (e % (args.pruning_intvl - 1) == 0
+                and e <= args.pruning_epochs) or (e == args.epochs - 1):
+            wlog(args, {"best_acc": best_acc, "sparsity": obs.sparsity})
     return best_acc
 
 
@@ -414,10 +429,15 @@ def main():
     else:
         torch.backends.cudnn.benchmark = True
 
-    train_dir = os.path.join(args.data_path, "train")
-    val_dir = os.path.join(args.data_path, "val")
-    dataset, dataset_test, train_sampler, test_sampler = load_data(
-        train_dir, val_dir, args)
+    if args.dataset == "MNIST":
+        dataset, dataset_test, train_sampler, test_sampler = get_data(
+            args.train_crop_size, args.dataset, args.data_path,
+            args.batch_size, args)
+    else:
+        train_dir = os.path.join(args.data_path, "train")
+        val_dir = os.path.join(args.data_path, "val")
+        dataset, dataset_test, train_sampler, test_sampler = load_data(
+            train_dir, val_dir, args)
     collate_fn = None
     num_classes = len(dataset.classes)
     mixup_transforms = []
@@ -456,8 +476,11 @@ def main():
         pin_memory=True)
 
     print("Creating model")
-    model = torchvision.models.__dict__[args.model](pretrained=args.pretrained,
-                                                    num_classes=num_classes)
+    if args.model == "toy2":
+        model = Toy2(1, num_classes)
+    else:
+        model = torchvision.models.__dict__[args.model](
+            pretrained=args.pretrained, num_classes=num_classes)
     model.to(args.device)
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -499,18 +522,19 @@ def main():
 
     args.lr_scheduler = args.lr_scheduler.lower()
     if args.lr_scheduler == "steplr":
-        lr_scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=1, gamma=args.lr_gamma)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(opt,
+                                                       step_size=1,
+                                                       gamma=args.lr_gamma)
     elif args.lr_scheduler == "cosineannealinglr":
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            opt, T_max=args.epochs - args.pruning_epochs
-        )
+            opt, T_max=args.epochs - args.pruning_epochs)
     elif args.lr_scheduler == "exponentiallr":
-        lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=args.lr_gamma)
+        lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            opt, gamma=args.lr_gamma)
     else:
         raise RuntimeError(
             f"Invalid lr scheduler '{args.lr_scheduler}'. Only StepLR, CosineAnnealingLR and ExponentialLR "
-            "are supported."
-        )
+            "are supported.")
 
     model_without_ddp = model
     if args.distributed:
@@ -521,23 +545,28 @@ def main():
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
 
     pretrained_acc = evaluate(model,
-                   criterion,
-                   data_loaders["test"],
-                   device=args.device,
-                   log_suffix="Pretrained")
-    wlog(args, {"best_acc":pretrained, "sparsity":0.0})
+                              criterion,
+                              data_loaders["test"],
+                              device=args.device,
+                              log_suffix="Pretrained")
+    wlog(args, {"best_acc": pretrained_acc, "sparsity": 0.0})
 
     print("Pruning model")
     scopes = get_global_prnning_scope(model)
     obs = create_obs(model, scopes, args)
 
     if args.pruning_strategy == "oneshot":
-        pruned_acc = one_shot_pruning(obs, model, data_loaders, criterion, args)
+        pruned_acc = one_shot_pruning(obs, model, data_loaders, criterion,
+                                      args)
     else:
-        pruned_acc = gradual_pruning(obs, model, data_loaders, train_sampler, opt, lr_scheduler,
-                        criterion, args)
+        pruned_acc = gradual_pruning(obs, model, data_loaders, train_sampler,
+                                     opt, lr_scheduler, criterion, args)
     log(args, obs)
-    wlog({"pruned_acc":pruned_acc, "drop_rate":(pruned_acc - pretrained_acc) / pretrained_acc})
+    wlog(
+        args, {
+            "pruned_acc": pruned_acc,
+            "drop_rate": (pruned_acc - pretrained_acc) / pretrained_acc
+        })
 
 
 if __name__ == "__main__":
