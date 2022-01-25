@@ -53,7 +53,7 @@ def parse_args():
         help="images per gpu, the total batch size is $NGPU x batch_size")
     parser.add_argument(
         "--fisher-batch-size",
-        default=64,
+        default=32,
         type=int,
         help="images per gpu, the total batch size is $NGPU x batch_size")
     parser.add_argument("--fisher-gb", default=10, type=int)
@@ -262,7 +262,7 @@ def parse_args():
                             "full", "layer_wise", "kron", "unit_wise",
                             "full_wood", "block_wood", "none"
                         ])
-    parser.add_argument("--block_size", type=int, default=5000)
+    parser.add_argument("--block_size", type=int, default=128)
     parser.add_argument(
         "--layer_normalize",
         dest="layer_normalize",
@@ -278,8 +278,8 @@ def parse_args():
 
     parser.add_argument("--sparsity", type=float, default=1.0)
     parser.add_argument("--damping", type=float, default=1e-4)
-    parser.add_argument("--n_recompute", type=int, default=10)
-    parser.add_argument("--n_recompute_samples", type=int, default=4096)
+    parser.add_argument("--n_recompute", type=int, default=16)
+    parser.add_argument("--n_recompute_samples", type=int, default=64)
 
     return parser.parse_args()
 
@@ -370,7 +370,7 @@ def gradual_pruning(obs, model, data_loaders, train_sampler, opt, lr_scheduler,
             obs.prune(data_loaders["fisher"],
                       sparsity,
                       args.damping,
-                      1,
+                      args.n_recompute,
                       args.n_recompute_samples,
                       args.fisher_gb,
                       check=args.check)
@@ -409,7 +409,7 @@ def main():
     if args.resume == "":
         args.pretrained = True
     args.output_dir = f"{args.output_dir}/{args.dataset}/{args.model}/" \
-               f"{args.pruning_strategy}/{args.sparsity}" \
+               f"{args.pruning_strategy}/{args.sparsity}/" \
                f"{args.fisher_type}/{args.fisher_shape}/" \
                f"{args.n_recompute}-{args.n_recompute_samples}"
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -419,7 +419,7 @@ def main():
     if args.rank == 0:
         wandb.init(project="pruning")
         wandb.run.name = f"{args.dataset}/{args.model}/" \
-               f"{args.pruning_strategy}/{args.sparsity}" \
+               f"{args.pruning_strategy}/{args.sparsity}/" \
                f"{args.fisher_type}/{args.fisher_shape}/" \
                f"{args.n_recompute}-{args.n_recompute_samples}"
 

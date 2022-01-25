@@ -15,13 +15,6 @@ def to_vector(parameters):
     return nn.utils.parameters_to_vector(parameters)
 
 
-def polynomial_schedule(start, end, i, n):
-    scale = end - start
-    progress = min(float(i) / n, 1.0)
-    remaining_progress = (1.0 - progress)**2
-    return end - scale * remaining_progress
-
-
 class Scope(object):
     def __init__(self, name, module):
         self.name = name
@@ -212,22 +205,10 @@ class OptimalBrainSurgeon(object):
     def grad(self):
         return to_vector([s.grad for s in self.scopes])
 
-    def _gen_samples(self, loader, n_samples):
-        for inputs, targets in loader:
-            if n_samples != -1 and len(inputs) > n_samples:
-                inputs = inputs[:n_samples]
-                targets = targets[:n_samples]
+    def _calc_fisher(self, loader, n_samples, damping=1e-3):
+        for i, (inputs, targets) in enumerate(loader):
             inputs = inputs.to(self.device)
             targets = targets.to(self.device)
-            yield inputs, targets
-            if n_samples != -1:
-                n_samples -= len(inputs)
-                if n_samples <= 0:
-                    break
-
-    def _calc_fisher(self, loader, n_samples, damping=1e-3):
-        for i, (inputs,
-                targets) in enumerate(self._gen_samples(loader, n_samples)):
             fisher_for_cross_entropy(self.model,
                                      fisher_type=self.fisher_type,
                                      fisher_shapes=[self.fisher_shape],
@@ -236,16 +217,16 @@ class OptimalBrainSurgeon(object):
                                      accumulate=True if i > 0 else False,
                                      data_average=False,
                                      scale=1 / n_samples)
-            print("+", end="")
-        print()
+            if i == (n_samples-1):
+                break
 
     def prune(self,
               loader,
               sparsity,
-              damping=1e-3,
-              n_recompute=1,
-              n_recompute_samples=4096,
-              fisher_gb=10,
+              damping,
+              n_recompute,
+              n_recompute_samples,
+              max_mem_gb,
               cb=lambda: None,
               check=False):
         init_n_zero = self.n_zero
@@ -255,17 +236,16 @@ class OptimalBrainSurgeon(object):
             n_recompute = target_n_zero - init_n_zero
             schedule = lambda i: self.n_zero + 1
         else:
-            schedule = lambda i: polynomial_schedule(
-                init_n_zero, target_n_zero, i, n_recompute)
+            schedule = lambda i: int((target_n_zero - init_n_zero)/n_recompute*i)
 
         for i in range(1, n_recompute + 1):
             self._calc_fisher(loader, n_recompute_samples, damping)
             with torch.no_grad():
-                n_pruned = int(schedule(i)) - self.n_zero
+                n_pruned = schedule(i) - self.n_zero
                 scores = self._get_scores()
                 _, indices = torch.sort(scores)
                 indices = indices[:n_pruned]
-                self.add_pruning_direction(indices, fisher_gb)
+                self.add_pruning_direction(indices, max_mem_gb)
                 for s in self.scopes:
                     j = torch.where(indices < s.r, indices, 0)
                     j = torch.where(s.l <= indices, j, 0)
@@ -314,8 +294,8 @@ class FullOBS(OptimalBrainSurgeon):
         d[i] = -pi
         return d
 
-    def add_pruning_direction(self, indices, fisher_gb):
-        stride = fisher_gb * 1024 * 1024 * 1024 // self.n // 4
+    def add_pruning_direction(self, indices, max_mem_gb):
+        stride = max_mem_gb * 1024 * 1024 * 1024 // self.n // 4
         d = torch.zeros(self.n).to(self.device)
         for k in range(0, len(indices), stride):
             d += self._pruning_direction(indices[k:k + stride])
@@ -359,13 +339,13 @@ class LayerOBS(OptimalBrainSurgeon):
         d[j] = -pj
         return d
 
-    def add_pruning_direction(self, indices, fisher_gb):
+    def add_pruning_direction(self, indices, max_mem_gb):
         for s in self.scopes:
             j = torch.where(indices < s.r, indices, 0)
             j = torch.where(s.l <= indices, j, 0)
             j = indices[j.nonzero()].view(-1)
             d = torch.zeros(s.n).to(self.device)
-            stride = fisher_gb * 1024 * 1024 * 1024 // s.n // 4
+            stride = max_mem_gb * 1024 * 1024 * 1024 // s.n // 4
             for k in range(0, len(j), stride):
                 d += self._pruning_direction(s, j[k:k + stride])
             s.parameters_iadd(d)
@@ -435,7 +415,7 @@ class NoneOBS(OptimalBrainSurgeon):
     def _pruning_direction(self, i):
         return None
 
-    def add_pruning_direction(self, indices, fisher_gb):
+    def add_pruning_direction(self, indices, max_mem_gb):
         pass
 
 
@@ -507,9 +487,13 @@ class FullWoodOBS(FullOBS):
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
         grads = []
-        for inputs, targets in self._gen_samples(loader, n_samples):
+        for i, (inputs, targets) in enumerate(loader):
+            inputs = inputs.to(self.device)
+            targets = targets.to(self.device)
             nn.CrossEntropyLoss()(self.model(inputs), targets).backward()
             grads.append(self.grad)
+            if i == (n_samples-1):
+                break
         grads = torch.vstack(grads)
         self.ifvp = IFVP(grads * mask, damping)
         self.ifisher_diag = self.ifvp.diag()
@@ -534,9 +518,13 @@ class BlockWoodOBS(FullWoodOBS):
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
         grads = []
-        for inputs, targets in self._gen_samples(loader, n_samples):
+        for i, (inputs, targets) in enumerate(loader):
+            inputs = inputs.to(self.device)
+            targets = targets.to(self.device)
             nn.CrossEntropyLoss()(self.model(inputs), targets).backward()
             grads.append(self.grad)
+            if i == (n_samples-1):
+                break
         grads = torch.vstack(grads)
         grads = torch.split(grads, self.block_size, dim=1)
         masks = torch.split(self.mask, self.block_size)
@@ -549,12 +537,12 @@ class BlockWoodOBS(FullWoodOBS):
         column = torch.zeros(self.n, len(i)).to(self.device)
         column[l:l + self.block_size, :] = ifvp.column(i - l)
         pi = self.parameters[i]
-        d = (-pi / self.ifisher_diag[i] * column).sum(1) * self.mask
+        d = column.mul_(-pi / self.ifisher_diag[i]).sum(1) * self.mask
         d[i] = -pi
         return d
 
-    def add_pruning_direction(self, indices, fisher_gb):
-        stride = fisher_gb * 1024 * 1024 * 1024 // self.block_size // 4
+    def add_pruning_direction(self, indices, max_mem_gb):
+        stride = max_mem_gb * 1024 * 1024 * 1024 // self.block_size // 4
         d = torch.zeros(self.n).to(self.device)
         for i in range(0, self.n, self.block_size):
             j = torch.where(indices < i + self.block_size, indices, 0)
