@@ -23,12 +23,12 @@ torchrun \
    pruning.py \
      --model=resnet50 \
      --data-path=/sqfs/work/jh210024/data/ILSVRC2012 \
-     --kfac_fast_inv \
-     --fisher_shape=none \
+     --fisher_shape=kron \
      --pruning_strategy=gradual \
-     --sparsity=0.8 \
+     --sparsity=0.98 \
      --batch-size=256 \
      --fisher-batch-size=128 \
      --val-batch-size=2048 \
+     --kfac_fast_inv \
      --fisher-gb=18 \
      --check
