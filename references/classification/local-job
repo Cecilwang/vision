@@ -3,9 +3,10 @@ python pruning.py \
      --dataset=MNIST \
      --data-path=.data \
      --train-crop-size=32 \
-     --fisher_shape=full \
-     --pruning_strategy=oneshot \
-     --block_size=100 \
+     --fisher_shape=block_wood \
+     --pruning_strategy=gradual \
+     --n_recompute=1 \
+     --n_recompute_samples=8 \
      --epochs=20 \
      --pruning_epochs=10 \
      --pruning_intvl=2 \

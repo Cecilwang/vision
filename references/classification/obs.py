@@ -1,3 +1,4 @@
+from itertools import islice
 import math
 
 import torch
@@ -118,8 +119,8 @@ class Scope(object):
     def prune(self, indices, check=False):
         if check:
             assert torch.all(indices < self.n)
-            assert torch.all(self.mask[indices] == 1.0)
             assert len(self.pruned & set(indices.tolist())) == 0
+            assert torch.all(self.mask[indices] == 1.0)
             self.pruned |= set(indices.tolist())
 
         with torch.no_grad():
@@ -206,7 +207,7 @@ class OptimalBrainSurgeon(object):
         return to_vector([s.grad for s in self.scopes])
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
-        for i, (inputs, targets) in enumerate(loader):
+        for i, (inputs, targets) in islice(enumerate(loader), n_samples):
             inputs = inputs.to(self.device)
             targets = targets.to(self.device)
             fisher_for_cross_entropy(self.model,
@@ -217,8 +218,6 @@ class OptimalBrainSurgeon(object):
                                      accumulate=True if i > 0 else False,
                                      data_average=False,
                                      scale=1 / n_samples)
-            if i == (n_samples-1):
-                break
 
     def prune(self,
               loader,
@@ -231,17 +230,18 @@ class OptimalBrainSurgeon(object):
               check=False):
         init_n_zero = self.n_zero
         target_n_zero = int(self.n * sparsity)
+        pruned_n_zero = target_n_zero - init_n_zero
 
         if n_recompute == -1:
-            n_recompute = target_n_zero - init_n_zero
-            schedule = lambda i: self.n_zero + 1
+            n_recompute = pruned_n_zero
+            schedule = lambda i: 1
         else:
-            schedule = lambda i: int((target_n_zero - init_n_zero)/n_recompute*i)
+            schedule = lambda i: int(pruned_n_zero / n_recompute * i)
 
         for i in range(1, n_recompute + 1):
             self._calc_fisher(loader, n_recompute_samples, damping)
             with torch.no_grad():
-                n_pruned = schedule(i) - self.n_zero
+                n_pruned = schedule(i)
                 scores = self._get_scores()
                 _, indices = torch.sort(scores)
                 indices = indices[:n_pruned]
@@ -487,13 +487,11 @@ class FullWoodOBS(FullOBS):
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
         grads = []
-        for i, (inputs, targets) in enumerate(loader):
+        for inputs, targets in islice(loader, n_samples):
             inputs = inputs.to(self.device)
             targets = targets.to(self.device)
             nn.CrossEntropyLoss()(self.model(inputs), targets).backward()
             grads.append(self.grad)
-            if i == (n_samples-1):
-                break
         grads = torch.vstack(grads)
         self.ifvp = IFVP(grads * mask, damping)
         self.ifisher_diag = self.ifvp.diag()
@@ -518,13 +516,11 @@ class BlockWoodOBS(FullWoodOBS):
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
         grads = []
-        for i, (inputs, targets) in enumerate(loader):
+        for inputs, targets in islice(loader, n_samples):
             inputs = inputs.to(self.device)
             targets = targets.to(self.device)
             nn.CrossEntropyLoss()(self.model(inputs), targets).backward()
             grads.append(self.grad)
-            if i == (n_samples-1):
-                break
         grads = torch.vstack(grads)
         grads = torch.split(grads, self.block_size, dim=1)
         masks = torch.split(self.mask, self.block_size)
