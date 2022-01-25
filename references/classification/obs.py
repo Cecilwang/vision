@@ -367,7 +367,7 @@ class LayerOBS(OptimalBrainSurgeon):
             d = torch.zeros(s.n).to(self.device)
             stride = fisher_gb * 1024 * 1024 * 1024 // s.n // 4
             for k in range(0, len(j), stride):
-                d += self._pruning_direction(s, indices[k:k + stride])
+                d += self._pruning_direction(s, j[k:k + stride])
             s.parameters_iadd(d)
 
 

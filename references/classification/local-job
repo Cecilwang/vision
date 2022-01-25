@@ -3,7 +3,7 @@ python pruning.py \
      --dataset=MNIST \
      --data-path=.data \
      --train-crop-size=32 \
-     --fisher_shape=block_wood \
+     --fisher_shape=full \
      --pruning_strategy=oneshot \
      --block_size=100 \
      --epochs=20 \

@@ -344,7 +344,6 @@ def one_shot_pruning(obs, model, data_loaders, criterion, args):
     acc = 0
 
     def _cb():
-        return
         nonlocal acc
         acc = evaluate(model,
                        criterion,
