@@ -4,7 +4,8 @@ python pruning.py \
      --data-path=.data \
      --train-crop-size=32 \
      --fisher_shape=block_wood \
-     --pruning_strategy=gradual \
+     --pruning_strategy=oneshot \
+     --block_size=100 \
      --epochs=20 \
      --pruning_epochs=10 \
      --pruning_intvl=2 \

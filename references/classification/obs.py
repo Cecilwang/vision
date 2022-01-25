@@ -265,25 +265,13 @@ class OptimalBrainSurgeon(object):
                 scores = self._get_scores()
                 _, indices = torch.sort(scores)
                 indices = indices[:n_pruned]
+                self.add_pruning_direction(indices, fisher_gb)
                 for s in self.scopes:
                     j = torch.where(indices < s.r, indices, 0)
                     j = torch.where(s.l <= indices, j, 0)
                     j = indices[j.nonzero()].view(-1)
-                    if self.fisher_shape != "none":
-                        stride = fisher_gb * 1024 * 1024 * 1024 // s.n_weight // 4
-                        d = torch.zeros(self.n if self.fisher_shape ==
-                                        SHAPE_FULL else s.n).to(self.device)
-                        for k in range(0, j.shape[0], stride):
-                            d += self._pruning_direction(s, j[k:k + stride])
-                        if self.fisher_shape == SHAPE_FULL:
-                            self.parameters_iadd(d)
-                        else:
-                            s.parameters_iadd(d)
                     s.prune(j - s.l, check=check)
-                    self.n_zero += j.shape[0]
-                    torch.cuda.empty_cache()
-                    print(".", end="")
-                print()
+                    self.n_zero += len(j)
             cb()
         #print(torch.cuda.memory_allocated())
 
@@ -319,12 +307,19 @@ class FullOBS(OptimalBrainSurgeon):
         scores = scores.masked_fill(self.mask == 0.0, float("inf"))
         return scores
 
-    def _pruning_direction(self, s, i):
-        pi = s.parameters[i - s.l]
-        d = (-pi / self.ifisher_diag[i] *
-             self.ifisher[:, i]).sum(1) * self.mask
+    def _pruning_direction(self, i):
+        pi = self.parameters[i]
+        d = (-pi / self.ifisher_diag[i] * self.ifisher[:, i]).sum(1)
+        d *= self.mask
         d[i] = -pi
         return d
+
+    def add_pruning_direction(self, indices, fisher_gb):
+        stride = fisher_gb * 1024 * 1024 * 1024 // self.n // 4
+        d = torch.zeros(self.n).to(self.device)
+        for k in range(0, len(indices), stride):
+            d += self._pruning_direction(indices[k:k + stride])
+        self.parameters_iadd(d)
 
 
 class LayerOBS(OptimalBrainSurgeon):
@@ -363,6 +358,17 @@ class LayerOBS(OptimalBrainSurgeon):
         d = (-pj / s.ifisher_diag[j] * s.ifisher[:, j]).sum(1) * s.mask
         d[j] = -pj
         return d
+
+    def add_pruning_direction(self, indices, fisher_gb):
+        for s in self.scopes:
+            j = torch.where(indices < s.r, indices, 0)
+            j = torch.where(s.l <= indices, j, 0)
+            j = indices[j.nonzero()].view(-1)
+            d = torch.zeros(s.n).to(self.device)
+            stride = fisher_gb * 1024 * 1024 * 1024 // s.n // 4
+            for k in range(0, len(j), stride):
+                d += self._pruning_direction(s, indices[k:k + stride])
+            s.parameters_iadd(d)
 
 
 class KronOBS(LayerOBS):
@@ -426,8 +432,11 @@ class NoneOBS(OptimalBrainSurgeon):
         return torch.abs(self.parameters).masked_fill(self.mask == 0.0,
                                                       float("inf"))
 
-    def _pruning_direction(self, s, i):
+    def _pruning_direction(self, i):
         return None
+
+    def add_pruning_direction(self, indices, fisher_gb):
+        pass
 
 
 class IFVP():
@@ -451,12 +460,12 @@ class IFVP():
             self.iF = self.damping * torch.eye(self.d)
             for i, g in enumerate(grads):
                 ifg = self.iF @ g
-                #print(ifg)
-                #print(self.v[i, :])
-                #torch.testing.assert_close(ifg, self.v[i, :])
-                #print(self.n + g.T @ ifg)
-                #print(self.q[i])
-                #torch.testing.assert_close(self.n + g.T @ ifg, self.q[i])
+                print(ifg)
+                print(self.v[i, :])
+                torch.testing.assert_close(ifg, self.v[i, :])
+                print(self.n + g.T @ ifg)
+                print(self.q[i])
+                torch.testing.assert_close(self.n + g.T @ ifg, self.q[i])
                 self.iF -= torch.outer(ifg, ifg) / (self.n + g.T @ ifg)
             print("ifsher")
             print(self.iF)
@@ -493,7 +502,7 @@ class FullWoodOBS(FullOBS):
     def __init__(self, model, scopes, fisher_type, world_size):
         assert fisher_type == FISHER_EMP
         super().__init__(model, scopes, fisher_type, world_size)
-        #self.fisher_shape = "full_wood"
+        self.fisher_shape = "full_wood"
         self.ifvp = None
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
@@ -505,13 +514,10 @@ class FullWoodOBS(FullOBS):
         self.ifvp = IFVP(grads * mask, damping)
         self.ifisher_diag = self.ifvp.diag()
 
-    def ifsher_column(self, i):
-        return self.ifvp.column(i)
-
-    def _pruning_direction(self, s, i):
-        pi = s.parameters[i - s.l]
-        d = (-pi / self.ifisher_diag[i] *
-             self.ifsher_column(i)).sum(1) * self.mask
+    def _pruning_direction(self, i):
+        pi = self.parameters[i]
+        d = (-pi / self.ifisher_diag[i] * self.ifvp.column(i)).sum(1)
+        d *= self.mask
         d[i] = -pi
         return d
 
@@ -520,7 +526,7 @@ class BlockWoodOBS(FullWoodOBS):
     def __init__(self, model, scopes, fisher_type, world_size):
         assert fisher_type == FISHER_EMP
         super().__init__(model, scopes, fisher_type, world_size)
-        #self.fisher_shape = "block_wood"
+        self.fisher_shape = "block_wood"
         self.block_size = None
 
     def set_block_size(self, block_size):
@@ -539,5 +545,22 @@ class BlockWoodOBS(FullWoodOBS):
             self.ifvp.append(IFVP(g * m, damping))
         self.ifisher_diag = torch.hstack([x.diag() for x in self.ifvp])
 
-    def ifsher_column(self, i):
-        return torch.hstack([x.column(i) for x in self.ifvp])
+    def _pruning_direction(self, ifvp, l, i):
+        column = torch.zeros(self.n, len(i)).to(self.device)
+        column[l:l + self.block_size, :] = ifvp.column(i - l)
+        pi = self.parameters[i]
+        d = (-pi / self.ifisher_diag[i] * column).sum(1) * self.mask
+        d[i] = -pi
+        return d
+
+    def add_pruning_direction(self, indices, fisher_gb):
+        stride = fisher_gb * 1024 * 1024 * 1024 // self.block_size // 4
+        d = torch.zeros(self.n).to(self.device)
+        for i in range(0, self.n, self.block_size):
+            j = torch.where(indices < i + self.block_size, indices, 0)
+            j = torch.where(i <= indices, j, 0)
+            j = indices[j.nonzero()].view(-1)
+            ifvp = self.ifvp[i // self.block_size]
+            for k in range(0, len(j), stride):
+                d += self._pruning_direction(ifvp, i, j[k:k + stride])
+        self.parameters_iadd(d)
