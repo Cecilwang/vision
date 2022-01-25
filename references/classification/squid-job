@@ -23,7 +23,7 @@ torchrun \
    pruning.py \
      --model=resnet50 \
      --data-path=/sqfs/work/jh210024/data/ILSVRC2012 \
-     --fisher_shape=kron \
+     --fisher_shape=block_wood \
      --pruning_strategy=gradual \
      --sparsity=0.98 \
      --batch-size=256 \
