@@ -485,14 +485,24 @@ class FullWoodOBS(FullOBS):
         self.fisher_shape = "full_wood"
         self.ifvp = None
 
-    def _calc_fisher(self, loader, n_samples, damping=1e-3):
+    def sample_grads(self, loader, n_samples):
+        assert n_samples % self.world_size == 0
         grads = []
-        for inputs, targets in islice(loader, n_samples):
+        for inputs, targets in islice(loader, n_samples // self.world_size):
             inputs = inputs.to(self.device)
             targets = targets.to(self.device)
             nn.CrossEntropyLoss()(self.model(inputs), targets).backward()
-            grads.append(self.grad)
-        grads = torch.vstack(grads)
+            if self.world_size > 1:
+                grad = self.grad
+                grads_list = [torch.zeros_like(grad).to(grad.device) for _ in range(self.world_size)]
+                dist.all_gather(grads_list, grad)
+                grads += grads_list
+            else:
+                grads.append(self.grad)
+        return torch.vstack(grads)
+
+    def _calc_fisher(self, loader, n_samples, damping=1e-3):
+        grads = self.sample_grads(loader, n_samples)
         self.ifvp = IFVP(grads * mask, damping)
         self.ifisher_diag = self.ifvp.diag()
 
@@ -515,13 +525,7 @@ class BlockWoodOBS(FullWoodOBS):
         self.block_size = block_size
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
-        grads = []
-        for inputs, targets in islice(loader, n_samples):
-            inputs = inputs.to(self.device)
-            targets = targets.to(self.device)
-            nn.CrossEntropyLoss()(self.model(inputs), targets).backward()
-            grads.append(self.grad)
-        grads = torch.vstack(grads)
+        grads = self.sample_grads(loader, n_samples)
         grads = torch.split(grads, self.block_size, dim=1)
         masks = torch.split(self.mask, self.block_size)
         self.ifvp = []

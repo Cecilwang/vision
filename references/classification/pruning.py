@@ -3,7 +3,9 @@ import os
 
 import torch
 from torch import nn
+from torch.utils.data import RandomSampler
 from torch.utils.data.dataloader import default_collate
+from torch.utils.data.distributed import DistributedSampler
 import torchvision
 import wandb
 
@@ -358,7 +360,7 @@ def one_shot_pruning(obs, model, data_loaders, criterion, args):
     return acc
 
 
-def gradual_pruning(obs, model, data_loaders, train_sampler, opt, lr_scheduler,
+def gradual_pruning(obs, model, data_loaders, train_sampler, fisher_sampler, opt, lr_scheduler,
                     criterion, args):
     best_acc = 0.0
     for e in range(args.epochs):
@@ -384,6 +386,7 @@ def gradual_pruning(obs, model, data_loaders, train_sampler, opt, lr_scheduler,
 
         if args.distributed:
             train_sampler.set_epoch(e)
+            fisher_sampler.set_epoch(e)
         if e > args.pruning_epochs and (
                 e - args.pruning_epochs) % args.lr_step_size == 0:
             lr_scheduler.step()
@@ -461,19 +464,23 @@ def main():
         pin_memory=True,
         collate_fn=collate_fn,
     )
-    data_loaders["fisher"] = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=args.fisher_batch_size,
-        sampler=torch.utils.data.RandomSampler(dataset),
-        num_workers=args.workers,
-        pin_memory=True,
-    )
     data_loaders["test"] = torch.utils.data.DataLoader(
         dataset_test,
         batch_size=args.val_batch_size,
         sampler=test_sampler,
         num_workers=args.workers,
         pin_memory=True)
+    if args.distributed:
+        fisher_sampler = DistributedSampler(dataset)
+    else:
+        fisher_sampler = RandomSampler(dataset)
+    data_loaders["fisher"] = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=args.fisher_batch_size,
+        sampler=fisher_sampler,
+        num_workers=args.workers,
+        pin_memory=True,
+    )
 
     print("Creating model")
     if args.model == "toy2":
@@ -559,7 +566,7 @@ def main():
         pruned_acc = one_shot_pruning(obs, model, data_loaders, criterion,
                                       args)
     else:
-        pruned_acc = gradual_pruning(obs, model, data_loaders, train_sampler,
+        pruned_acc = gradual_pruning(obs, model, data_loaders, train_sampler, fisher_sampler,
                                      opt, lr_scheduler, criterion, args)
     log(args, obs)
     wlog(
