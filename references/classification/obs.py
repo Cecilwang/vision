@@ -418,61 +418,84 @@ class NoneOBS(OptimalBrainSurgeon):
     def add_pruning_direction(self, indices, max_mem_gb):
         pass
 
+def batch_inner(x,y):
+    assert x.ndim == 2
+    assert x.shape == y.shape
+    return torch.einsum('bd,bd->b', x, y)
 
 class IFVP():
     def __init__(self, grads, damping, check=False):
-        self.n, self.d = grads.shape[0], grads.shape[1]
+        self.b, self.n, self.d = grads.shape
         self.damping = 1. / damping
 
-        self.v = torch.zeros((self.n, self.d), device=grads.device)
-        self.q = torch.zeros(self.n, device=grads.device)
+        self.v = torch.zeros((self.b, self.n, self.d), device=grads.device)
+        self.q = torch.zeros((self.b, self.n), device=grads.device)
 
-        self.v[0, :] = self.damping * grads[0, :]
-        self.q[0] = self.n + torch.inner(self.v[0, :], grads[0, :])
-        for i, g in enumerate(grads[1:]):
-            i += 1
-            self.v[i, :] = self.damping * g - (self.v[:i, :] @ g /
-                                               self.q[:i]).T @ self.v[:i]
-            self.q[i] = self.n + torch.inner(self.v[i, :], g)
+        self.v[:, 0, :] = self.damping * grads[:, 0, :]
+        self.q[:, 0] = self.n + batch_inner(self.v[:, 0, :], grads[:, 0, :])
+        for i in range(1, self.n):
+            g = grads[:, i, :] # bxd
+            v = torch.einsum('bkd,bd->bk', self.v[:,:i,:], g) # bxk
+            v /= self.q[:, :i] # bxk
+            v = torch.einsum('bk,bkd->bd', v, self.v[:, :i, :]) # bxd
+            self.v[:, i, :] = self.damping * g - v
+            self.q[:, i] = self.n + batch_inner(self.v[:, i, :], g)
 
         self.check = check
         if self.check:
-            self.iF = self.damping * torch.eye(self.d)
-            for i, g in enumerate(grads):
-                ifg = self.iF @ g
-                print(ifg)
-                print(self.v[i, :])
-                torch.testing.assert_close(ifg, self.v[i, :])
-                print(self.n + g.T @ ifg)
-                print(self.q[i])
-                torch.testing.assert_close(self.n + g.T @ ifg, self.q[i])
-                self.iF -= torch.outer(ifg, ifg) / (self.n + g.T @ ifg)
             print("ifsher")
-            print(self.iF)
+            self.iFs = []
+            for j, grad in enumerate(grads):
+                iF = self.damping * torch.eye(self.d)
+                for i, g in enumerate(grad):
+                    ifg = iF @ g
+                    print(ifg)
+                    print(self.v[j, i, :])
+                    torch.testing.assert_close(ifg, self.v[j, i, :])
+                    print(self.n + g.T @ ifg)
+                    print(self.q[j, i])
+                    torch.testing.assert_close(self.n + g.T @ ifg, self.q[j, i])
+                    iF -= torch.outer(ifg, ifg) / (self.n + g.T @ ifg)
+                print(iF)
+                self.iFs.append(iF)
 
     def __call__(self, x):
         assert x.ndim == 2
-        res = self.damping * x - self.v.T @ (self.v @ x /
-                                             self.q.reshape(-1, 1))
+        assert x.shape[0] = self.b * self.d
+        x = x.reshape(self.b, self.d, -1)
+        res = torch.einsum('bnd,bdm->bnm', self.v, x)
+        res /= self.q.unsqueeze(-1)
+        res = torch.einsum('bnd,bnm->bdm', self.v, res)
+        res = self.damping * x - res
         if self.check:
+            gt = torch.zeros_like(res)
+            for i, iF in range(self.iFs):
+                gt[i] = iF @ x[i]
+            gt = self.iFs[i] @ x
             print(res)
-            print(self.iF @ x)
-            torch.testing.assert_close(res, self.iF @ x, rtol=1e-4, atol=1e-4)
+            print(gt)
+            torch.testing.assert_close(res, gt, rtol=1e-4, atol=1e-4)
         return res
 
     def diag(self):
-        res = self.damping * torch.ones(self.d, device=self.v.device)
+        res = self.damping * torch.ones((self.b, self.d), device=self.v.device)
         for i in range(self.n):
-            res -= (self.v[i, :]**2) / self.q[i]
+            res -= (self.v[:, i, :]**2) / self.q[:, i]
+        res = res.reshape(-1)
         if self.check:
+            gt = torch.hstack([x.diag() for x in self.iFs])
             print(res)
-            print(self.iF.diag())
-            torch.testing.assert_close(res, self.iF.diag())
+            print(gt)
+            torch.testing.assert_close(res, gt)
         return res
 
     def column(self, i):
         assert i.ndim == 1
         res = self(F.one_hot(i, self.d).type(self.v.dtype).transpose(1, 0))
+        v = self.v[i]
+        q = self.q[i:i+1]
+        res = self.damping * x - v.T @ (v @ x / q)
+
         if self.check:
             torch.testing.assert_close(res, self.iF[:, i])
         return res
@@ -494,7 +517,7 @@ class FullWoodOBS(FullOBS):
             nn.CrossEntropyLoss()(self.model(inputs), targets).backward()
             if self.world_size > 1:
                 grad = self.grad
-                grads_list = [torch.zeros_like(grad).to(grad.device) for _ in range(self.world_size)]
+                grads_list = [torch.zeros_like(grad) for _ in range(self.world_size)]
                 dist.all_gather(grads_list, grad)
                 grads += grads_list
             else:
@@ -526,11 +549,23 @@ class BlockWoodOBS(FullWoodOBS):
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
         grads = self.sample_grads(loader, n_samples)
-        grads = torch.split(grads, self.block_size, dim=1)
-        masks = torch.split(self.mask, self.block_size)
+        print(grads.shape)
+        grads *= self.mask
+        grads = grads[:, :-(self.n%self.block_size)]
+        print(grads.shape)
+        # nxd -> nxbxd
+        grads = grads.reshape(n_samples, -1, self.block_size)
+        print(grads.shape)
+        # nxbxd -> bxnxd
+        grads = grads.transpose(0,1)
+        print(grads.shape)
+        self.ifvp = IFVP(grads, damping)
         self.ifvp = []
+        i = 0
         for g, m in zip(grads, masks):
             self.ifvp.append(IFVP(g * m, damping))
+            print(i)
+            i += 1
         self.ifisher_diag = torch.hstack([x.diag() for x in self.ifvp])
 
     def _pruning_direction(self, ifvp, l, i):

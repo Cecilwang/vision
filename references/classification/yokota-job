@@ -3,7 +3,7 @@
 #SBATCH -J prunning
 #YBATCH -r am_8
 #SBATCH -N 1
-#YBATCH -l h_rt=72:00:00
+#$ -l h_rt=72:00:00
 
 source /etc/profile.d/modules.sh
 module load cuda/11.4
@@ -23,8 +23,11 @@ torchrun \
     pruning.py \
       --model=resnet50 \
       --data-path=/mnt/nfs/datasets/ILSVRC2012 \
-      --kfac_fast_inv \
-      --fisher_shape=kron \
-      --pruning_strategy=gradual \
-      --sparsity=0.8 \
-      --fisher-gb=8
+     --fisher_shape=block_wood \
+     --pruning_strategy=gradual \
+     --sparsity=0.98 \
+     --batch-size=128 \
+     --val-batch-size=1024 \
+     --kfac_fast_inv \
+     --fisher-gb=8 \
+     --check
