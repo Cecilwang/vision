@@ -240,7 +240,9 @@ class OptimalBrainSurgeon(object):
             schedule = lambda i: int(pruned_n_zero / n_recompute * i)
 
         for i in range(1, n_recompute + 1):
+            torch.cuda.empty_cache()
             self._calc_fisher(loader, n_recompute_samples, damping)
+            torch.cuda.empty_cache()
             with torch.no_grad():
                 n_pruned = schedule(i)
                 scores = self._get_scores()
@@ -253,7 +255,9 @@ class OptimalBrainSurgeon(object):
                     j = indices[j.nonzero()].view(-1)
                     s.prune(j - s.l, check=check)
                     self.n_zero += len(j)
+            torch.cuda.empty_cache()
             cb()
+        torch.cuda.empty_cache()
         #print(torch.cuda.memory_allocated())
 
     @property
