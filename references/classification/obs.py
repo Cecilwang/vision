@@ -490,9 +490,14 @@ class BlockWoodOBS(FullWoodOBS):
 
     def add_pruning_direction(self, indices, max_mem_gb):
         d = torch.zeros(self.n).to(self.device)
-        for i in range(0, self.n, self.block_size):
-            j = torch.where(indices < i + self.block_size, indices, -1)
-            j = torch.where(i <= indices, j, -1)
+
+        block_id = torch.unique(indices // self.block_size)
+        for bid in block_id:
+            l = bid * self.block_size
+            r = l + self.block_size
+            j = torch.where(indices < r, indices, -1)
+            j = torch.where(l <= indices, j, -1)
             j = indices[j != -1].view(-1)
             d += self.get_block_pruning_direction(j, max_mem_gb)
+            print(f"block {bid}/{len(block_id)}")
         self.parameters_iadd(d)

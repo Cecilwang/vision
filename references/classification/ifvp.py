@@ -111,15 +111,15 @@ class IFVP():
 
     def accumulate_column(self, i, factor=None):
         assert i.ndim == 1
-        x = F.one_hot(i % self.d, num_classes=self.d).type(self.v.dtype)
+        x = F.one_hot(i % self.d, self.d).type(self.v.dtype).to(self.v.device)
         v = self.v[i // self.d]
         q = self.q[i // self.d]
         x = self.damping * x - v.transpose(1, 2).matmul(
             v.matmul(x.unsqueeze(-1)) / q.unsqueeze(-1)).squeeze(-1)
 
-        y = torch.zeros(self.b * self.d)
+        y = torch.zeros(self.b * self.d).to(self.v.device)
         if factor is None:
-            factor = torch.ones_like(i)
+            factor = torch.ones_like(i).to(self.v.device)
 
         block_id = torch.unique(i // self.d)
         for bid in block_id:

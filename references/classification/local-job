@@ -6,7 +6,7 @@ python pruning.py \
      --val-resize-size=32 \
      --val-crop-size=32 \
      --fisher_shape=block_wood \
-     --pruning_strategy=gradual \
+     --pruning_strategy=oneshot \
      --n_recompute=2 \
      --n_recompute_samples=8 \
      --epochs=20 \
