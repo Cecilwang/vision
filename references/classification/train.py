@@ -132,15 +132,26 @@ def load_data(traindir, valdir, args):
     else:
         auto_augment_policy = getattr(args, "auto_augment", None)
         random_erase_prob = getattr(args, "random_erase", 0.0)
-        dataset = torchvision.datasets.ImageFolder(
-            traindir,
-            presets.ClassificationPresetTrain(
-                crop_size=train_crop_size,
-                interpolation=interpolation,
-                auto_augment_policy=auto_augment_policy,
-                random_erase_prob=random_erase_prob,
-            ),
-        )
+        if args.dataset == "cifar100":
+            dataset = torchvision.datasets.CIFAR100(
+                args.data_path, train=True, download=True,
+                transform=presets.ClassificationPresetTrain(
+                    crop_size=train_crop_size,
+                    interpolation=interpolation,
+                    auto_augment_policy=auto_augment_policy,
+                    random_erase_prob=random_erase_prob,
+                ),
+            )
+        else:
+            dataset = torchvision.datasets.ImageFolder(
+                traindir,
+                presets.ClassificationPresetTrain(
+                    crop_size=train_crop_size,
+                    interpolation=interpolation,
+                    auto_augment_policy=auto_augment_policy,
+                    random_erase_prob=random_erase_prob,
+                ),
+            )
         if args.cache_dataset:
             print(f"Saving dataset_train to {cache_path}")
             utils.mkdir(os.path.dirname(cache_path))
@@ -162,10 +173,16 @@ def load_data(traindir, valdir, args):
             weights = PM.get_weight(args.weights)
             preprocessing = weights.transforms()
 
-        dataset_test = torchvision.datasets.ImageFolder(
-            valdir,
-            preprocessing,
-        )
+        if args.dataset == "cifar100":
+            dataset_test = torchvision.datasets.CIFAR100(
+                args.data_path, train=False, download=False,
+                transform=preprocessing,
+            )
+        else:
+            dataset_test = torchvision.datasets.ImageFolder(
+                valdir,
+                preprocessing,
+            )
         if args.cache_dataset:
             print(f"Saving dataset_test to {cache_path}")
             utils.mkdir(os.path.dirname(cache_path))

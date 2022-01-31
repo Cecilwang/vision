@@ -66,21 +66,18 @@ class IFVP():
     def __call__(self, x):
         assert x.ndim == 2
         assert x.shape[0] == self.real_d
+        if self.check:
+            gt = self.iF @ x
         if self.pad != 0:
             x = F.pad(x, (0, 0, 0, self.pad), "constant", 0)
         x = x.reshape(self.b, self.d, -1)
-        res = torch.einsum('bnd,bdm->bnm', self.v, x)
-        res /= self.q.unsqueeze(-1)
-        res = torch.einsum('bnd,bnm->bdm', self.v, res)
-        res = self.damping * x - res
-        res = res.reshape(self.b * self.d, -1)[:self.real_d, :]
+        x = self.damping * x - self.v.transpose(1, 2).matmul(self.v.matmul(x)/self.q.unsqueeze(-1))
         x = x.reshape(self.b * self.d, -1)[:self.real_d, :]
         if self.check:
-            gt = self.iF @ x
-            print(res)
+            print(x)
             print(gt)
-            assert_close(res, gt, rtol=EPS, atol=EPS)
-        return res
+            assert_close(x, gt, rtol=EPS, atol=EPS)
+        return x
 
     def diag(self):
         res = self.damping * torch.ones((self.b, self.d), device=self.v.device)
@@ -96,8 +93,7 @@ class IFVP():
 
     def column(self, i):
         assert i.ndim == 1
-        x = F.one_hot(i, self.real_d).type(self.v.dtype).transpose(1, 0)
-        res = self(x)
+        res = self(F.one_hot(i, self.real_d).type(self.v.dtype).transpose(1, 0))
         if self.check:
             assert_close(res, self.iF[:, i], rtol=EPS, atol=EPS)
         return res
