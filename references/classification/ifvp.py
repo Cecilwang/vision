@@ -71,7 +71,8 @@ class IFVP():
         if self.pad != 0:
             x = F.pad(x, (0, 0, 0, self.pad), "constant", 0)
         x = x.reshape(self.b, self.d, -1)
-        x = self.damping * x - self.v.transpose(1, 2).matmul(self.v.matmul(x)/self.q.unsqueeze(-1))
+        x = self.damping * x - self.v.transpose(1, 2).matmul(
+            self.v.matmul(x) / self.q.unsqueeze(-1))
         x = x.reshape(self.b * self.d, -1)[:self.real_d, :]
         if self.check:
             print(x)
@@ -93,7 +94,45 @@ class IFVP():
 
     def column(self, i):
         assert i.ndim == 1
-        res = self(F.one_hot(i, self.real_d).type(self.v.dtype).transpose(1, 0))
+        x = F.one_hot(i % self.d, num_classes=self.d).type(self.v.dtype)
+        v = self.v[i // self.d]
+        q = self.q[i // self.d]
+        x = self.damping * x - v.transpose(1, 2).matmul(
+            v.matmul(x.unsqueeze(-1)) / q.unsqueeze(-1)).squeeze(-1)
+        y = torch.zeros(i.shape[0], self.b * self.d)
+        for j, k in enumerate(i):
+            k = k // self.d * self.d
+            y[j, k:k + self.d] = x[j]
+        y = y.T[:self.real_d, :]
+
         if self.check:
-            assert_close(res, self.iF[:, i], rtol=EPS, atol=EPS)
-        return res
+            assert_close(y, self.iF[:, i], rtol=EPS, atol=EPS)
+        return y
+
+    def accumulate_column(self, i, factor=None):
+        assert i.ndim == 1
+        x = F.one_hot(i % self.d, num_classes=self.d).type(self.v.dtype)
+        v = self.v[i // self.d]
+        q = self.q[i // self.d]
+        x = self.damping * x - v.transpose(1, 2).matmul(
+            v.matmul(x.unsqueeze(-1)) / q.unsqueeze(-1)).squeeze(-1)
+
+        y = torch.zeros(self.b * self.d)
+        if factor is None:
+            factor = torch.ones_like(i)
+
+        block_id = torch.unique(i // self.d)
+        for bid in block_id:
+            l = bid * self.d
+            r = l + self.d
+            j = torch.where(i < r, i, -1)
+            j = torch.where(l <= i, j, -1)
+            j = (j != -1).nonzero().view(-1)
+            y[l:r] += (x[j] * factor[j].unsqueeze(-1)).sum(0)
+        y = y[:self.real_d]
+
+        if self.check:
+            print(y)
+            print(self.iF[:, i].sum(1))
+            assert_close(y, self.iF[:, i].sum(1), rtol=EPS, atol=EPS)
+        return y

@@ -13,6 +13,10 @@ def test(ifvp):
     #ifvp.column(torch.tensor(0)) # failed
     ifvp.column(torch.tensor([0]))
     ifvp.column(torch.tensor([0, 4]))
+    print("test accumulate column")
+    ifvp.accumulate_column(torch.tensor([4]))
+    ifvp.accumulate_column(torch.tensor([0, 4]))
+    ifvp.accumulate_column(torch.tensor([0, 1, 2, 3, 4, 5]))
 
 
 m = 3

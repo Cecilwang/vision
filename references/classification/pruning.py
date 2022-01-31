@@ -16,7 +16,6 @@ from train import train_one_epoch, evaluate, load_data
 import utils
 
 from models import Toy2
-from datasets import get_data
 from obs import Scope
 from obs import FullOBS, LayerOBS, KronOBS, NoneOBS, FullWoodOBS, BlockWoodOBS
 
@@ -27,7 +26,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Pruning")
 
     parser.add_argument("--dataset",
-                        default="imagenet",
+                        default="IMAGENET",
                         type=str,
                         help="dataset name")
     parser.add_argument("--data-path",
@@ -360,8 +359,8 @@ def one_shot_pruning(obs, model, data_loaders, criterion, args):
     return acc
 
 
-def gradual_pruning(obs, model, data_loaders, train_sampler, fisher_sampler, opt, lr_scheduler,
-                    criterion, args):
+def gradual_pruning(obs, model, data_loaders, train_sampler, fisher_sampler,
+                    opt, lr_scheduler, criterion, args):
     best_acc = 0.0
     for e in range(args.epochs):
         log(args, f"Epoch {e}/{args.epochs}")
@@ -432,15 +431,10 @@ def main():
     else:
         torch.backends.cudnn.benchmark = True
 
-    if args.dataset == "MNIST":
-        dataset, dataset_test, train_sampler, test_sampler = get_data(
-            args.train_crop_size, args.dataset, args.data_path,
-            args.batch_size, args)
-    else:
-        train_dir = os.path.join(args.data_path, "train")
-        val_dir = os.path.join(args.data_path, "val")
-        dataset, dataset_test, train_sampler, test_sampler = load_data(
-            train_dir, val_dir, args)
+    train_dir = os.path.join(args.data_path, "train")
+    val_dir = os.path.join(args.data_path, "val")
+    dataset, dataset_test, train_sampler, test_sampler = load_data(
+        train_dir, val_dir, args)
     collate_fn = None
     num_classes = len(dataset.classes)
     mixup_transforms = []
@@ -487,7 +481,10 @@ def main():
         model = Toy2(1, num_classes)
     else:
         model = torchvision.models.__dict__[args.model](
-            pretrained=args.pretrained, num_classes=num_classes)
+            pretrained=args.pretrained, num_classes=1000)
+        if num_classes != 1000:
+            model.fc = nn.Linear(model.fc.in_features, num_classes)
+
     model.to(args.device)
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -566,8 +563,9 @@ def main():
         pruned_acc = one_shot_pruning(obs, model, data_loaders, criterion,
                                       args)
     else:
-        pruned_acc = gradual_pruning(obs, model, data_loaders, train_sampler, fisher_sampler,
-                                     opt, lr_scheduler, criterion, args)
+        pruned_acc = gradual_pruning(obs, model, data_loaders, train_sampler,
+                                     fisher_sampler, opt, lr_scheduler,
+                                     criterion, args)
     log(args, obs)
     wlog(
         args, {

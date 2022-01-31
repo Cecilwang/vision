@@ -20,6 +20,22 @@ try:
 except ImportError:
     PM = None
 
+MEAN_STD = {
+    "MNIST": [(0.1307, ), (0.3081, )],
+    "CIFAR10": [
+        (0.485, 0.456, 0.406),
+        (0.229, 0.224, 0.225),
+    ],
+    "CIFAR100": [
+        (0.5070751592371323, 0.48654887331495095, 0.4409178433670343),
+        (0.2673342858792401, 0.2564384629170883, 0.27615047132568404),
+    ],
+    "IMAGENET": [
+        (0.485, 0.456, 0.406),
+        (0.229, 0.224, 0.225),
+    ]
+}
+
 
 def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema=None, scaler=None):
     model.train()
@@ -132,10 +148,12 @@ def load_data(traindir, valdir, args):
     else:
         auto_augment_policy = getattr(args, "auto_augment", None)
         random_erase_prob = getattr(args, "random_erase", 0.0)
-        if args.dataset == "cifar100":
-            dataset = torchvision.datasets.CIFAR100(
+        if args.dataset in ["MNIST", "CIFAR10", "CIFAR100"]:
+            dataset = getattr(torchvision.datasets, args.dataset)(
                 args.data_path, train=True, download=True,
                 transform=presets.ClassificationPresetTrain(
+                    mean = MEAN_STD[args.dataset][0],
+                    std = MEAN_STD[args.dataset][1],
                     crop_size=train_crop_size,
                     interpolation=interpolation,
                     auto_augment_policy=auto_augment_policy,
@@ -167,14 +185,16 @@ def load_data(traindir, valdir, args):
     else:
         if not args.weights:
             preprocessing = presets.ClassificationPresetEval(
+                mean = MEAN_STD[args.dataset][0],
+                std = MEAN_STD[args.dataset][1],
                 crop_size=val_crop_size, resize_size=val_resize_size, interpolation=interpolation
             )
         else:
             weights = PM.get_weight(args.weights)
             preprocessing = weights.transforms()
 
-        if args.dataset == "cifar100":
-            dataset_test = torchvision.datasets.CIFAR100(
+        if args.dataset in ["MNIST", "CIFAR10", "CIFAR100"]:
+            dataset_test = getattr(torchvision.datasets, args.dataset)(
                 args.data_path, train=False, download=False,
                 transform=preprocessing,
             )

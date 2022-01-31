@@ -1,5 +1,6 @@
 from itertools import islice
 import math
+import os
 
 import torch
 from torch import nn
@@ -120,7 +121,8 @@ class Scope(object):
     def prune(self, indices, check=False):
         if check:
             assert torch.all(indices < self.n)
-            assert len(self.pruned & set(indices.tolist())) == 0
+            union = self.pruned & set(indices.tolist())
+            assert len(union) == 0, [x + self.l for x in union]
             assert torch.all(self.mask[indices] == 1.0)
             self.pruned |= set(indices.tolist())
 
@@ -237,7 +239,7 @@ class OptimalBrainSurgeon(object):
             n_recompute = pruned_n_zero
             schedule = lambda i: 1
         else:
-            schedule = lambda i: int(pruned_n_zero / n_recompute * i)
+            schedule = lambda i: int(pruned_n_zero / n_recompute)
 
         for i in range(1, n_recompute + 1):
             torch.cuda.empty_cache()
@@ -248,11 +250,12 @@ class OptimalBrainSurgeon(object):
                 scores = self._get_scores()
                 _, indices = torch.sort(scores)
                 indices = indices[:n_pruned]
-                self.add_pruning_direction(indices, max_mem_gb)
+                indices, _ = torch.sort(indices)
+                self.add_pruning_direction(indices.clone(), max_mem_gb)
                 for s in self.scopes:
-                    j = torch.where(indices < s.r, indices, 0)
-                    j = torch.where(s.l <= indices, j, 0)
-                    j = indices[j.nonzero()].view(-1)
+                    j = torch.where(indices < s.r, indices, -1)
+                    j = torch.where(s.l <= indices, j, -1)
+                    j = indices[j != -1].view(-1)
                     s.prune(j - s.l, check=check)
                     self.n_zero += len(j)
             torch.cuda.empty_cache()
@@ -346,9 +349,9 @@ class LayerOBS(OptimalBrainSurgeon):
 
     def add_pruning_direction(self, indices, max_mem_gb):
         for s in self.scopes:
-            j = torch.where(indices < s.r, indices, 0)
-            j = torch.where(s.l <= indices, j, 0)
-            j = indices[j.nonzero()].view(-1)
+            j = torch.where(indices < s.r, indices, -1)
+            j = torch.where(s.l <= indices, j, -1)
+            j = indices[j != -1].view(-1)
             d = torch.zeros(s.n).to(self.device)
             stride = max_mem_gb * 1024 * 1024 * 1024 // s.n // 4
             for k in range(0, len(j), stride):
@@ -455,7 +458,7 @@ class FullWoodOBS(FullOBS):
 
     def _pruning_direction(self, i):
         pi = self.parameters[i]
-        d = (-pi / self.ifisher_diag[i] * self.ifvp.column(i)).sum(1)
+        d = self.ifvp.accumulate_column(i, -pi / self.ifisher_diag[i])
         d *= self.mask
         d[i] = -pi
         return d
@@ -469,3 +472,27 @@ class BlockWoodOBS(FullWoodOBS):
 
     def set_block_size(self, block_size):
         self.block_size = block_size
+
+    def get_block_pruning_direction(self, indices, max_mem_gb):
+        stride = max_mem_gb * 1024 * 1024 * 1024 // 4
+        stride = stride // self.ifvp.v.shape[1] // self.ifvp.v.shape[2]
+        d = torch.zeros(self.n).to(self.device)
+        if self.world_size > 1:
+            rank = int(os.environ["RANK"])
+            for k in range(stride * rank, len(indices),
+                           stride * self.world_size):
+                d += self._pruning_direction(indices[k:k + stride])
+            dist.all_reduce(d, op=dist.ReduceOp.SUM)
+        else:
+            for k in range(0, len(indices), stride):
+                d += self._pruning_direction(indices[k:k + stride])
+        return d
+
+    def add_pruning_direction(self, indices, max_mem_gb):
+        d = torch.zeros(self.n).to(self.device)
+        for i in range(0, self.n, self.block_size):
+            j = torch.where(indices < i + self.block_size, indices, -1)
+            j = torch.where(i <= indices, j, -1)
+            j = indices[j != -1].view(-1)
+            d += self.get_block_pruning_direction(j, max_mem_gb)
+        self.parameters_iadd(d)
