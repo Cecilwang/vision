@@ -314,7 +314,8 @@ def create_obs(model, scopes, args):
         "full_wood": FullWoodOBS,
         "block_wood": BlockWoodOBS,
         "none": NoneOBS
-    }[args.fisher_shape](model, scopes, args.fisher_type, args.world_size)
+    }[args.fisher_shape](model, scopes, args.fisher_type, args.rank,
+                         args.world_size)
     if args.fisher_shape == "block_wood":
         obs.set_block_size(args.block_size)
     if args.fisher_shape in [SHAPE_KRON, SHAPE_LAYER_WISE]:

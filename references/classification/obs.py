@@ -155,7 +155,7 @@ class Scope(object):
 
 
 class OptimalBrainSurgeon(object):
-    def __init__(self, model, scopes, fisher_type, world_size=0):
+    def __init__(self, model, scopes, fisher_type, rank=0, world_size=0):
         self.model = model
         self.scopes = scopes
         offset = 0
@@ -170,6 +170,7 @@ class OptimalBrainSurgeon(object):
         self.ifisher = None
         self.ifisher_diag = None
         self.device = next(self.model.parameters()).device
+        self.rank = rank
         self.world_size = world_size
 
     def _get_scope_by_indice(self, i):
@@ -274,8 +275,8 @@ class OptimalBrainSurgeon(object):
 
 
 class FullOBS(OptimalBrainSurgeon):
-    def __init__(self, model, scopes, fisher_type, world_size):
-        super().__init__(model, scopes, fisher_type, world_size)
+    def __init__(self, model, scopes, fisher_type, rank, world_size):
+        super().__init__(model, scopes, fisher_type, rank, world_size)
         self.fisher_shape = SHAPE_FULL
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
@@ -311,8 +312,8 @@ class FullOBS(OptimalBrainSurgeon):
 
 
 class LayerOBS(OptimalBrainSurgeon):
-    def __init__(self, model, scopes, fisher_type, world_size):
-        super().__init__(model, scopes, fisher_type, world_size)
+    def __init__(self, model, scopes, fisher_type, rank, world_size):
+        super().__init__(model, scopes, fisher_type, rank, world_size)
         self.fisher_shape = SHAPE_LAYER_WISE
         self.normalize = False
 
@@ -409,8 +410,8 @@ class KronOBS(LayerOBS):
 
 
 class NoneOBS(OptimalBrainSurgeon):
-    def __init__(self, model, scopes, fisher_type, world_size):
-        super().__init__(model, scopes, fisher_type, world_size)
+    def __init__(self, model, scopes, fisher_type, rank, world_size):
+        super().__init__(model, scopes, fisher_type, rank, world_size)
         self.fisher_shape = "none"
 
     def _calc_fisher(self, loader, n_samples, damping=1e-3):
@@ -428,9 +429,9 @@ class NoneOBS(OptimalBrainSurgeon):
 
 
 class FullWoodOBS(FullOBS):
-    def __init__(self, model, scopes, fisher_type, world_size):
+    def __init__(self, model, scopes, fisher_type, rank, world_size):
         assert fisher_type == FISHER_EMP
-        super().__init__(model, scopes, fisher_type, world_size)
+        super().__init__(model, scopes, fisher_type, rank, world_size)
         self.fisher_shape = "full_wood"
         self.ifvp = None
         self.block_size = -1
@@ -465,9 +466,9 @@ class FullWoodOBS(FullOBS):
 
 
 class BlockWoodOBS(FullWoodOBS):
-    def __init__(self, model, scopes, fisher_type, world_size):
+    def __init__(self, model, scopes, fisher_type, rank, world_size):
         assert fisher_type == FISHER_EMP
-        super().__init__(model, scopes, fisher_type, world_size)
+        super().__init__(model, scopes, fisher_type, rank, world_size)
         self.fisher_shape = "block_wood"
 
     def set_block_size(self, block_size):
@@ -477,27 +478,22 @@ class BlockWoodOBS(FullWoodOBS):
         stride = max_mem_gb * 1024 * 1024 * 1024 // 4
         stride = stride // self.ifvp.v.shape[1] // self.ifvp.v.shape[2]
         d = torch.zeros(self.n).to(self.device)
-        if self.world_size > 1:
-            rank = int(os.environ["RANK"])
-            for k in range(stride * rank, len(indices),
-                           stride * self.world_size):
-                d += self._pruning_direction(indices[k:k + stride])
-            dist.all_reduce(d, op=dist.ReduceOp.SUM)
-        else:
-            for k in range(0, len(indices), stride):
-                d += self._pruning_direction(indices[k:k + stride])
+        for k in range(0, len(indices), stride):
+            d += self._pruning_direction(indices[k:k + stride])
         return d
 
     def add_pruning_direction(self, indices, max_mem_gb):
         d = torch.zeros(self.n).to(self.device)
-
         block_id = torch.unique(indices // self.block_size)
-        for bid in block_id:
+        for i in range(self.rank, len(block_id), self.world_size):
+            bid = block_id[i]
             l = bid * self.block_size
             r = l + self.block_size
             j = torch.where(indices < r, indices, -1)
             j = torch.where(l <= indices, j, -1)
             j = indices[j != -1].view(-1)
             d += self.get_block_pruning_direction(j, max_mem_gb)
-            print(f"block {bid}/{len(block_id)}")
+            print(f"block {i}/{len(block_id)}")
+        if self.world_size > 1:
+            dist.all_reduce(d, op=dist.ReduceOp.SUM)
         self.parameters_iadd(d)
