@@ -474,6 +474,13 @@ class BlockWoodOBS(FullWoodOBS):
     def set_block_size(self, block_size):
         self.block_size = block_size
 
+    def _pruning_direction(self, i):
+        pi = self.parameters[i]
+        d = self.ifvp.accumulate_block_column(i, -pi / self.ifisher_diag[i])
+        d *= self.mask
+        d[i] = -pi
+        return d
+
     def get_block_pruning_direction(self, indices, max_mem_gb):
         stride = max_mem_gb * 1024 * 1024 * 1024 // 4
         stride = stride // self.ifvp.v.shape[1] // self.ifvp.v.shape[2]

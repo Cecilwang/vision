@@ -17,6 +17,9 @@ def test(ifvp):
     ifvp.accumulate_column(torch.tensor([4]))
     ifvp.accumulate_column(torch.tensor([0, 4]))
     ifvp.accumulate_column(torch.tensor([0, 1, 2, 3, 4, 5]))
+    print("test accumulate block column")
+    ifvp.accumulate_block_column(torch.tensor([0]))
+    ifvp.accumulate_block_column(torch.tensor([0, 1]))
 
 
 m = 3

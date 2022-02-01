@@ -136,3 +136,27 @@ class IFVP():
             print(self.iF[:, i].sum(1))
             assert_close(y, self.iF[:, i].sum(1), rtol=EPS, atol=EPS)
         return y
+
+    def accumulate_block_column(self, i, factor=None):
+        assert i.ndim == 1
+        bid = torch.unique(i // self.d)
+        assert len(bid) == 1
+
+        x = F.one_hot(i % self.d, self.d).type(self.v.dtype).to(self.v.device)
+        v = self.v[bid]
+        q = self.q[bid]
+        x = self.damping * x - v.transpose(1, 2).matmul(
+            v.matmul(x.unsqueeze(-1)) / q.unsqueeze(-1)).squeeze(-1)
+
+        y = torch.zeros(self.b * self.d).to(self.v.device)
+        if factor is None:
+            factor = torch.ones_like(i).to(self.v.device)
+        l = bid * self.d
+        y[l:l + self.d] = (x * factor.unsqueeze(-1)).sum(0)
+        y = y[:self.real_d]
+
+        if self.check:
+            print(y)
+            print(self.iF[:, i].sum(1))
+            assert_close(y, self.iF[:, i].sum(1), rtol=EPS, atol=EPS)
+        return y
