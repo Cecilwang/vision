@@ -29,6 +29,4 @@ torchrun \
      --batch-size=256 \
      --val-batch-size=2048 \
      --kfac_fast_inv \
-     --fisher-gb=4 \
-     --damping=1e-4 \
-     --check
+     --damping=1e-4

@@ -57,7 +57,6 @@ def parse_args():
         default=32,
         type=int,
         help="images per gpu, the total batch size is $NGPU x batch_size")
-    parser.add_argument("--fisher-gb", default=10, type=int)
 
     parser.add_argument("--epochs",
                         default=90,
@@ -264,6 +263,7 @@ def parse_args():
                             "full_wood", "block_wood", "none"
                         ])
     parser.add_argument("--block_size", type=int, default=128)
+    parser.add_argument("--block_batch", type=int, default=10000)
     parser.add_argument(
         "--layer_normalize",
         dest="layer_normalize",
@@ -318,6 +318,7 @@ def create_obs(model, scopes, args):
                          args.world_size)
     if args.fisher_shape == "block_wood":
         obs.set_block_size(args.block_size)
+        obs.set_block_batch(args.block_batch)
     if args.fisher_shape in [SHAPE_KRON, SHAPE_LAYER_WISE]:
         obs.normalize = args.layer_normalize
     if args.fisher_shape == SHAPE_KRON:
@@ -354,9 +355,10 @@ def one_shot_pruning(obs, model, data_loaders, criterion, args):
                        log_suffix=f"[sparsity={obs.sparsity}]")
         wlog(args, {"best_acc": acc, "sparsity": obs.sparsity})
 
-    obs.prune(data_loaders["fisher"], args.sparsity, args.damping,
-              args.n_recompute, args.n_recompute_samples, args.fisher_gb, _cb,
-              args.check)
+    for i in range(1, args.n_recompute + 1):
+        sparsity = polynomial_schedule(0.0, args.sparsity, i, args.n_recompute)
+        obs.prune(data_loaders["fisher"], sparsity, args.damping, 1,
+                  args.n_recompute_samples, _cb, args.check)
     return acc
 
 
@@ -374,7 +376,6 @@ def gradual_pruning(obs, model, data_loaders, train_sampler, fisher_sampler,
                       args.damping,
                       args.n_recompute,
                       args.n_recompute_samples,
-                      args.fisher_gb,
                       check=args.check)
             acc = evaluate(model,
                            criterion,
@@ -480,6 +481,8 @@ def main():
     print("Creating model")
     if args.model == "toy2":
         model = Toy2(1, num_classes)
+        model.load_state_dict(
+            torch.load(f".data/toy2-mnist-best", map_location=args.device))
     else:
         model = torchvision.models.__dict__[args.model](
             pretrained=args.pretrained, num_classes=1000)

@@ -29,5 +29,4 @@ torchrun \
      --batch-size=128 \
      --val-batch-size=1024 \
      --kfac_fast_inv \
-     --fisher-gb=8 \
      --check

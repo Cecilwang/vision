@@ -26,9 +26,10 @@ class IFVP():
 
         self.b, self.n, self.d = grads.shape
         self.damping = 1. / damping
+        self.device = grads.device
 
-        self.v = torch.zeros((self.b, self.n, self.d), device=grads.device)
-        self.q = torch.zeros((self.b, self.n), device=grads.device)
+        self.v = torch.zeros((self.b, self.n, self.d), device=self.device)
+        self.q = torch.zeros((self.b, self.n), device=self.device)
 
         self.v[:, 0, :] = self.damping * grads[:, 0, :]
         self.q[:, 0] = self.n + batch_inner(self.v[:, 0, :], grads[:, 0, :])
@@ -64,6 +65,8 @@ class IFVP():
             print(self.iF)
 
     def __call__(self, x):
+        if x.ndim == 1:
+            x = x.unsqueeze(-1)
         assert x.ndim == 2
         assert x.shape[0] == self.real_d
         if self.check:
@@ -81,7 +84,7 @@ class IFVP():
         return x
 
     def diag(self):
-        res = self.damping * torch.ones((self.b, self.d), device=self.v.device)
+        res = self.damping * torch.ones((self.b, self.d), device=self.device)
         for i in range(self.n):
             res -= (self.v[:, i, :]**2) / self.q[:, i].unsqueeze(-1)
         res = res.reshape(-1)[:self.real_d]
@@ -111,15 +114,15 @@ class IFVP():
 
     def accumulate_column(self, i, factor=None):
         assert i.ndim == 1
-        x = F.one_hot(i % self.d, self.d).type(self.v.dtype).to(self.v.device)
+        x = F.one_hot(i % self.d, self.d).type(self.v.dtype).to(self.device)
         v = self.v[i // self.d]
         q = self.q[i // self.d]
         x = self.damping * x - v.transpose(1, 2).matmul(
             v.matmul(x.unsqueeze(-1)) / q.unsqueeze(-1)).squeeze(-1)
 
-        y = torch.zeros(self.b * self.d).to(self.v.device)
+        y = torch.zeros(self.b * self.d).to(self.device)
         if factor is None:
-            factor = torch.ones_like(i).to(self.v.device)
+            factor = torch.ones_like(i).to(self.device)
 
         block_id = torch.unique(i // self.d)
         for bid in block_id:
@@ -142,15 +145,15 @@ class IFVP():
         bid = torch.unique(i // self.d)
         assert len(bid) == 1
 
-        x = F.one_hot(i % self.d, self.d).type(self.v.dtype).to(self.v.device)
+        x = F.one_hot(i % self.d, self.d).type(self.v.dtype).to(self.device)
         v = self.v[bid]
         q = self.q[bid]
         x = self.damping * x - v.transpose(1, 2).matmul(
             v.matmul(x.unsqueeze(-1)) / q.unsqueeze(-1)).squeeze(-1)
 
-        y = torch.zeros(self.b * self.d).to(self.v.device)
+        y = torch.zeros(self.b * self.d).to(self.device)
         if factor is None:
-            factor = torch.ones_like(i).to(self.v.device)
+            factor = torch.ones_like(i).to(self.device)
         l = bid * self.d
         y[l:l + self.d] = (x * factor.unsqueeze(-1)).sum(0)
         y = y[:self.real_d]

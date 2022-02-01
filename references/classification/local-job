@@ -7,11 +7,13 @@ python pruning.py \
      --val-crop-size=32 \
      --fisher_shape=block_wood \
      --pruning_strategy=oneshot \
-     --n_recompute=2 \
-     --n_recompute_samples=8 \
+     --n_recompute=16 \
+     --n_recompute_samples=64 \
      --epochs=20 \
      --pruning_epochs=10 \
      --pruning_intvl=2 \
      --sparsity=0.8 \
+     --damping=1e-3 \
+     --kfac_fast_inv \
      --device=cpu \
      --check
