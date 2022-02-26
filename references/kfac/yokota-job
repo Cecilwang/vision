@@ -1,0 +1,22 @@
+#!/bin/bash
+
+#SBATCH -J prunning
+#YBATCH -r am_8
+#SBATCH -N 1
+#$ -l h_rt=72:00:00
+
+source /etc/profile.d/modules.sh
+module load cuda/11.4
+module load cudnn/cuda-11.4
+
+source $HOME/vir/py3/bin/activate
+export PYTHONPATH=$PYTHONPATH:$HOME/asdfghjkl
+
+torchrun \
+  --standalone \
+  --nnodes=1 \
+  --nproc_per_node=8 \
+    train.py \
+     --data-path=/mnt/nfs/datasets/ILSVRC2012 \
+     --batch-size=128 \
+     --val-batch-size=1024
