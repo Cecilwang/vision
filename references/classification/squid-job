@@ -21,12 +21,14 @@ torchrun \
  --nnodes=1 \
  --nproc_per_node=8 \
    pruning.py \
-     --model=resnet50 \
+     --model=resnet18 \
      --data-path=/sqfs/work/jh210024/data/ILSVRC2012 \
      --fisher_shape=block_wood \
      --pruning_strategy=gradual \
-     --sparsity=0.98 \
-     --batch-size=256 \
-     --val-batch-size=2048 \
+     --sparsity=0.8 \
+     --batch-size=512 \
+     --val-batch-size=4096 \
+     --block_size=4096 \
+     --block_batch=32 \
      --kfac_fast_inv \
      --damping=1e-4

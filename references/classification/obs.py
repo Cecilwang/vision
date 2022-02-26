@@ -402,11 +402,11 @@ class NoneOBS(OptimalBrainSurgeon):
         return torch.abs(self.parameters).masked_fill(self.mask == 0.0,
                                                       float("inf"))
 
-    def _pruning_direction(self, i):
-        return None
 
     def add_pruning_direction(self, indices):
-        pass
+        p = self.parameters
+        p[indices] = 0.0
+        self.parameters = p
 
 
 class FullWoodOBS(FullOBS):
