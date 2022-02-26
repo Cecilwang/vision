@@ -327,7 +327,7 @@ if __name__ == '__main__':
     if args.dataset == 'IMAGENET':
         dataset = IMAGENET(args)
         criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
-    if args.dataset == 'MNIST':
+    elif args.dataset == 'MNIST':
         dataset = MNIST(args)
         criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     else:
@@ -336,7 +336,7 @@ if __name__ == '__main__':
     # ========== MODEL ==========
     if args.model == 'resnet50':
         model = torchvision.models.resnet50(num_classes=dataset.num_classes)
-    if args.model == 'MNISTToy':
+    elif args.model == 'MNISTToy':
         model = MNISTToy()
     else:
         raise ValueError(f'Unknown model {args.model}')
