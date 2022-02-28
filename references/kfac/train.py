@@ -239,7 +239,7 @@ class Metric(object):
         return (self._corrects / self._n).item()
 
     def __str__(self):
-        return f"Loss: {self.loss:.4f}, Acc: {self.accuracy:.4f}"
+        return f'Loss: {self.loss:.4f}, Acc: {self.accuracy:.4f}'
 
 
 def train(epoch, dataset, model, criterion, opt, args):
@@ -274,13 +274,11 @@ def train(epoch, dataset, model, criterion, opt, args):
         metric.update(inputs.shape[0], loss, outputs, targets)
 
         if i % 100 == 0:
-            print(f"Epoch {epoch} {i}/{len(dataset.loader)} Train {metric}")
+            print(f'Epoch {epoch} {i}/{len(dataset.loader)} Train {metric}')
 
     if args.distributed:
         metric.sync()
-    print(
-        f"Epoch {epoch} {i}/{len(dataset.loader)} Train {metric} LR: {opt.param_groups[0]['lr']}"
-    )
+    print(f'Epoch {epoch} {i}/{len(dataset.loader)} Train {metric}')
     wandb.log(
         {
             'train/loss': metric.loss,
@@ -309,7 +307,7 @@ def test(epoch, dataset, model, criterion, args):
 
     if args.distributed:
         metric.sync()
-    print(f"Epoch {epoch} Test {metric}")
+    print(f'Epoch {epoch} Test {metric}')
     wandb.log({
         'test/loss': metric.loss,
         'test/accuracy': metric.accuracy
