@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 import os
 
@@ -14,7 +15,9 @@ from torchvision import transforms
 
 import wandb
 
-from kfac import KFAC
+from asdfghjkl import KFAC
+from asdfghjkl import SHAPE_KRON
+from asdfghjkl.fisher import LOSS_CROSS_ENTROPY
 
 
 def parse_args():
@@ -42,10 +45,6 @@ def parse_args():
                         choices=['resnet50', 'MNISTToy'])
 
     parser.add_argument('--epochs', type=int, default=40)
-    parser.add_argument('--opt',
-                        default='kfac',
-                        type=str,
-                        choices=['sgd', 'kfac'])
     parser.add_argument('--lr', type=float, default=0.8)
     parser.add_argument('--warmup-factor', type=float, default=0.125)
     parser.add_argument('--warmup-epochs', type=float, default=5)
@@ -53,9 +52,14 @@ def parse_args():
                         nargs='+',
                         type=int,
                         default=[15, 25, 30])
+
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--weight-decay', type=float, default=0.00005)
-    parser.add_argument('--damping', type=float, default=1e-3)
+    parser.add_argument('--cov-update-freq', type=int, default=10)
+    parser.add_argument('--inv-update-freq', type=int, default=100)
+    parser.add_argument('--ema-decay', type=float, default=0.05)
+    parser.add_argument('--damping', type=float, default=0.001)
+    parser.add_argument('--kl-clip', type=float, default=0.001)
 
     return parser.parse_args()
 
@@ -111,6 +115,10 @@ def init_distributed_mode(args):
                                          rank=args.rank)
     setup_print_for_distributed(args.rank == 0)
     setup_wandb_for_distributed(args.rank == 0, args)
+
+
+def to_vector(x):
+    return nn.utils.parameters_to_vector(x)
 
 
 class Dataset(object):
@@ -242,33 +250,47 @@ class Metric(object):
         return f'Loss: {self.loss:.4f}, Acc: {self.accuracy:.4f}'
 
 
-def train(epoch, dataset, model, criterion, opt, args):
+def train(epoch, dataset, model, criterion, opt, kfac, args):
     dataset.train()
     if args.distributed:
         dataset.sampler.set_epoch(epoch)
     model.train()
 
+    lr = opt.param_groups[0]['lr']
     metric = Metric(args.device)
     for i, (inputs, targets) in enumerate(dataset.loader):
         inputs = inputs.to(args.device)
         targets = targets.to(args.device)
+        opt.zero_grad(set_to_none=True)
 
-        outputs = model(inputs)
-        loss = criterion(outputs, targets)
-        opt.zero_grad()
+        if args.cov_update_freq != -1 and i % args.cov_update_freq == 0:
+            scale = 1. / args.world_size
+            loss, outputs = kfac.accumulate_curvature(inputs,
+                                                      targets,
+                                                      ema_decay=args.ema_decay,
+                                                      calc_emp_loss_grad=True,
+                                                      scale=1. /
+                                                      args.world_size)
+            if args.world_size > 1:
+                kfac.reduce_curvature()
+        else:
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
 
-        if args.opt in ['kfac'] and opt.steps % opt.TCov == 0:
-            opt.acc_stats = True
-            with torch.no_grad():
-                sampled_y = torch.multinomial(
-                    torch.nn.functional.softmax(outputs.cpu().data, dim=1),
-                    1).squeeze().to(args.device)
-            loss_sample = criterion(outputs, sampled_y)
-            loss_sample.backward(retain_graph=True)
-            opt.acc_stats = False
-            opt.zero_grad()
+        if args.inv_update_freq != -1 and i % args.inv_update_freq == 0:
+            kfac.update_inv(args.damping)
 
-        loss.backward()
+        #                              kl_clip
+        # kl_clip: grad *= sqrt(---------------------)
+        #                        |sum(ng*grad)*lr^2|
+        grad = to_vector([p.grad for p in kfac.parameters_for(SHAPE_KRON)])
+        kfac.precondition()
+        ng = to_vector([p.grad for p in kfac.parameters_for(SHAPE_KRON)])
+        vg_sum = ((ng * grad).sum() * lr**2).item()
+        nu = min(1.0, (args.kl_clip / abs(vg_sum))**0.5)
+        for p in kfac.parameters_for(SHAPE_KRON):
+            p.grad.data *= nu
         opt.step()
 
         metric.update(inputs.shape[0], loss, outputs, targets)
@@ -278,12 +300,12 @@ def train(epoch, dataset, model, criterion, opt, args):
 
     if args.distributed:
         metric.sync()
-    print(f'Epoch {epoch} {i}/{len(dataset.loader)} Train {metric}')
+    print(f'Epoch {epoch} Train {metric} LR: {lr}')
     wandb.log(
         {
             'train/loss': metric.loss,
             'train/accuracy': metric.accuracy,
-            'train/lr': opt.param_groups[0]['lr']
+            'train/lr': lr
         }, epoch)
 
 
@@ -343,21 +365,11 @@ if __name__ == '__main__':
         model = DistributedDataParallel(model, device_ids=[args.gpu])
 
     # ========== OPTIMIZER ==========
-    if args.opt == 'sgd':
-        opt = torch.optim.SGD(model.parameters(),
-                              lr=args.lr,
-                              momentum=args.momentum,
-                              weight_decay=args.weight_decay)
-    elif args.opt == 'kfac':
-        opt = KFAC(model,
-                   lr=args.lr,
-                   momentum=args.momentum,
-                   weight_decay=args.weight_decay,
-                   damping=args.damping,
-                   damping_warmup_steps=0,
-                   n_distributed=args.world_size)
-    else:
-        raise ValueError(f'Unknown optimizer {args.opt}')
+    opt = torch.optim.SGD(model.parameters(),
+                          lr=args.lr,
+                          momentum=args.momentum,
+                          weight_decay=args.weight_decay)
+    kfac = KFAC(model, 'fisher_emp', loss_type=LOSS_CROSS_ENTROPY)
 
     # ========== LEARNING RATE SCHEDULER ==========
     if args.warmup_epochs > 0:
@@ -370,6 +382,6 @@ if __name__ == '__main__':
 
     # ========== TRAINING ==========
     for e in range(args.epochs):
-        train(e, dataset, model, criterion, opt, args)
+        train(e, dataset, model, criterion, opt, kfac, args)
         test(e, dataset, model, criterion, args)
         lr_scheduler.step()
