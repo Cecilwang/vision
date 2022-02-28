@@ -52,7 +52,7 @@ def parse_args():
     parser.add_argument('--lr-decay-epoch',
                         nargs='+',
                         type=int,
-                        default=[20, 30, 35])
+                        default=[15, 25, 30])
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--weight-decay', type=float, default=0.00005)
     parser.add_argument('--damping', type=float, default=1e-3)
