@@ -21,7 +21,8 @@ torchrun \
  --nnodes=1 \
  --nproc_per_node=8 \
    train.py \
-   --lr-decay-epoch 20 30 35 \
-   --label-smoothing 0.1 \
-   --warmup-epochs 0 \
-   --name without-warmup
+    --batch-size=256 \
+    --val-batch-size=2048 \
+    --lr=0.8 \
+    --warmup-factor=0.125 \
+    --name asdl
