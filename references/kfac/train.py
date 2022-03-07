@@ -362,8 +362,6 @@ if __name__ == '__main__':
     else:
         raise ValueError(f'Unknown model {args.model}')
     model.to(args.device)
-    if args.distributed:
-        model = DistributedDataParallel(model, device_ids=[args.gpu])
 
     # ========== OPTIMIZER ==========
     opt = torch.optim.SGD(model.parameters(),
@@ -374,6 +372,11 @@ if __name__ == '__main__':
                 'fisher_emp',
                 loss_type=LOSS_CROSS_ENTROPY,
                 ignore_modules=[nn.BatchNorm1d, nn.BatchNorm2d])
+    for module in kfac.modules_for(SHAPE_KRON):
+        print(f"Registered {module}")
+
+    if args.distributed:
+        model = DistributedDataParallel(model, device_ids=[args.gpu])
 
     # ========== LEARNING RATE SCHEDULER ==========
     if args.warmup_epochs > 0:
@@ -387,5 +390,7 @@ if __name__ == '__main__':
     # ========== TRAINING ==========
     for e in range(args.epochs):
         train(e, dataset, model, criterion, opt, kfac, args)
+        torch.cuda.empty_cache()
         test(e, dataset, model, criterion, args)
+        torch.cuda.empty_cache()
         lr_scheduler.step()

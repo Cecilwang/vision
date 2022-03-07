@@ -19,4 +19,7 @@ torchrun \
     train.py \
      --data-path=/mnt/nfs/datasets/ILSVRC2012 \
      --batch-size=128 \
-     --val-batch-size=1024
+     --val-batch-size=1024 \
+     --lr=0.4 \
+     --warmup-factor=0.25 \
+     --name=asdl
