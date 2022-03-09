@@ -274,6 +274,9 @@ def train(epoch, dataset, model, criterion, opt, kfac, args):
                                                       args.world_size)
             if args.world_size > 1:
                 kfac.reduce_curvature()
+                for p in model.parameters():
+                    dist.all_reduce(p.grad.data, op=dist.ReduceOp.SUM)
+                    p.grad.data /= args.world_size
         else:
             outputs = model(inputs)
             loss = criterion(outputs, targets)
